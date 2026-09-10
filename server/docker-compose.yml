@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  go-scanner:
+    build: ./go-scanner
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis:6379
+    restart: unless-stopped
+
+  python-analyst:
+    build: ./python-analyst
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis:6379
+      DATABASE_URL: ${DATABASE_URL}   # Neon Postgres connection string
+      DB_FLUSH_SECONDS: "15"          # batch-sync interval into Neon
+    restart: unless-stopped
+
+  go-shield:
+    build: ./go-shield
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis:6379
+      MAX_BALANCE_USD: "10.00"
+      MIN_CONFIDENCE_LOW_BALANCE: "85.0"
+    restart: unless-stopped
