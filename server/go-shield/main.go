@@ -1,16 +1,9 @@
 // Bot 3: The Risk & Execution Shield
 //
-// Subscribes to "market.signals" (published by the Python analyst), applies
-// hard capital guardrails, and — only in Fully Automated mode — hands the
-// trade off to your broker client. In Co-Pilot mode it publishes an approval
-// request to "trade.pending" instead of executing, and waits for a human
-// "approve"/"reject" pushed from the dashboard on "trade.approvals".
-//
-// The actual broker/M-Pesa order call is intentionally a stub
-// (placeBrokerOrder). Wire in your real broker SDK there once you've decided
-// which exchange/broker API you're integrating — that call moves real money
-// and needs its own auth, idempotency, and error handling that's specific to
-// whichever broker you pick.
+// Subscribes to "market.signals", applies capital guardrails, and — only in
+// Fully Automated mode — hands approved trades to the execution-bridge
+// (Python) via "trade.execute". Co-Pilot mode never executes; it only
+// surfaces a pending_approval decision for a human to review.
 package main
 
 import (
@@ -36,7 +29,7 @@ type Decision struct {
 	Action     string  `json:"action"`
 	Confidence float64 `json:"confidence"`
 	Price      float64 `json:"price"`
-	Status     string  `json:"status"` // "approved" | "blocked" | "pending_approval"
+	Status     string  `json:"status"`
 	Reason     string  `json:"reason"`
 	Timestamp  int64   `json:"timestamp"`
 }
@@ -63,8 +56,8 @@ func main() {
 			continue
 		}
 
-		balance := currentBalanceUSD(ctx, rdb) // read from Redis, set by your account-sync job
-		mode := tradingMode(ctx, rdb)           // "copilot" (default) or "automated"
+		balance := currentBalanceUSD(ctx, rdb)
+		mode := tradingMode(ctx, rdb)
 
 		decision := Decision{
 			Symbol: sig.Symbol, Action: sig.Action,
@@ -72,8 +65,6 @@ func main() {
 			Timestamp: time.Now().UnixMilli(),
 		}
 
-		// Hard capital guardrail: below the strict-mode ceiling, require a
-		// much higher confidence bar before even considering the trade.
 		if balance <= maxBalance && sig.Confidence < lowBalanceMinConfidence {
 			decision.Status = "blocked"
 			decision.Reason = "balance below ceiling and confidence under strict-mode threshold"
@@ -84,15 +75,15 @@ func main() {
 		}
 
 		if mode == "automated" {
-			if err := placeBrokerOrder(sig); err != nil {
+			payload, _ := json.Marshal(sig)
+			if err := rdb.Publish(ctx, "trade.execute", payload).Err(); err != nil {
 				decision.Status = "blocked"
-				decision.Reason = "broker execution failed: " + err.Error()
+				decision.Reason = "failed to hand off to execution bridge: " + err.Error()
 			} else {
 				decision.Status = "approved"
-				decision.Reason = "auto-executed"
+				decision.Reason = "dispatched to execution bridge"
 			}
 		} else {
-			// Co-Pilot mode: never auto-execute, just surface it for a human tap.
 			decision.Status = "pending_approval"
 			decision.Reason = "co-pilot mode — awaiting manual approval"
 		}
@@ -101,19 +92,10 @@ func main() {
 	}
 }
 
-// placeBrokerOrder is a stub. Replace this with your real broker/exchange
-// SDK call. Keep it non-blocking / on its own goroutine with a timeout in
-// production so a hung broker API can never freeze this service.
-func placeBrokerOrder(sig TradeSignal) error {
-	log.Printf("[STUB] would place %s order for %s at %.2f (confidence %.2f%%) — wire real broker API here",
-		sig.Action, sig.Symbol, sig.TriggerPrice, sig.Confidence)
-	return nil
-}
-
 func currentBalanceUSD(ctx context.Context, rdb *redis.Client) float64 {
 	v, err := rdb.Get(ctx, "account:balance_usd").Result()
 	if err != nil {
-		return 0.0 // fail safe: unknown balance is treated as "protect capital"
+		return 0.0
 	}
 	f, _ := strconv.ParseFloat(v, 64)
 	return f
@@ -122,7 +104,7 @@ func currentBalanceUSD(ctx context.Context, rdb *redis.Client) float64 {
 func tradingMode(ctx context.Context, rdb *redis.Client) string {
 	v, err := rdb.Get(ctx, "config:trading_mode").Result()
 	if err != nil || v == "" {
-		return "copilot" // fail safe default: never auto-execute unless explicitly toggled
+		return "copilot"
 	}
 	return v
 }
