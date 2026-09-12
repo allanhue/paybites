@@ -1,6 +1,6 @@
 "use client";
 
-import ModeToggle from "../ui/ModeToggle";
+import ModeToggle from "../ui/mode_toggle";
 
 export default function Navbar({ connected }: { connected: boolean }) {
   return (

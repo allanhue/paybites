@@ -1,4 +1,4 @@
-import { TradeDecision } from "@/app/lib/useSignalStream";
+import { TradeDecision } from "@/app/lib/use_signal-stream";
 
 const statusColor: Record<TradeDecision["status"], string> = {
   approved: "#35D0A0",
@@ -7,6 +7,18 @@ const statusColor: Record<TradeDecision["status"], string> = {
 };
 
 export default function RiskPanel({ decisions }: { decisions: TradeDecision[] }) {
+  async function approve(d: TradeDecision) {
+    await fetch(`${process.env.NEXT_PUBLIC_API_URL}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: d.symbol,
+        confidence: d.confidence,
+        trigger_price: d.price,
+      }),
+    });
+  }
+
   return (
     <div className="border border-[#233042] bg-[#161F2B]">
       <div className="border-b border-[#233042] px-4 py-3 text-sm text-[#7C8B9C]">
@@ -14,9 +26,7 @@ export default function RiskPanel({ decisions }: { decisions: TradeDecision[] })
       </div>
       <div className="max-h-96 overflow-y-auto">
         {decisions.length === 0 && (
-          <p className="px-4 py-6 text-sm text-[#7C8B9C]">
-            No decisions yet — Bot 3 is idle.
-          </p>
+          <p className="px-4 py-6 text-sm text-[#7C8B9C]">No decisions yet — Bot 3 is idle.</p>
         )}
         {decisions.map((d, i) => (
           <div
@@ -26,11 +36,17 @@ export default function RiskPanel({ decisions }: { decisions: TradeDecision[] })
           >
             <div className="flex items-center justify-between text-sm">
               <span className="font-mono text-[#E7ECF2]">{d.symbol}</span>
-              <span style={{ color: statusColor[d.status] }}>
-                {d.status.replace("_", " ")}
-              </span>
+              <span style={{ color: statusColor[d.status] }}>{d.status.replace("_", " ")}</span>
             </div>
             <p className="mt-1 text-xs text-[#7C8B9C]">{d.reason}</p>
+            {d.status === "pending_approval" && (
+              <button
+                onClick={() => approve(d)}
+                className="mt-2 rounded-sm bg-[#35D0A0] px-3 py-1 text-xs font-medium text-[#0F1720] hover:opacity-90"
+              >
+                Approve & Trade
+              </button>
+            )}
           </div>
         ))}
       </div>

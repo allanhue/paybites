@@ -1,28 +1,36 @@
-// Reference wiring for app/page.tsx — merge this into your existing page,
-// don't just overwrite it, since you already have layout/content there.
 "use client";
 
-import Navbar from "@/app/components/navbar/Navbar";
-import ConfidenceCard from "@/app/components/ui/ConfidenceCard";
-import SignalFeed from "@/app/components/ui/SignalFeed";
-import RiskPanel from "@/app/components/ui/RiskPanel";
-import { useSignalStream } from "@/app/lib/useSignalStream";
+import Navbar from "@/app/components/navbar/navbar";
+import ConfidenceCard from "@/app/components/ui/confidence_card";
+import SignalFeed from "@/app/components/ui/signal_feed";
+import RiskPanel from "@/app/components/ui/risk_panel";
+import AnalystDetail from "@/app/components/ui/analyst_detail";
+import OutcomesPanel from "@/app/components/ui/outcome_panel";
+import HistoryChart from "@/app/components/ui/history_chart";
+import BestHoursChart from "@/app/components/ui/best_hours-chart";
+import { useSignalStream } from "@/app/lib/use_signal-stream";
 
 export default function DashboardPage() {
-  const { signals, decisions, connected } = useSignalStream();
+  const { signals, decisions, scores, outcomes, missed, connected } = useSignalStream();
+  const symbol = signals[0]?.symbol || "BTCUSDT";
 
   return (
     <div className="min-h-screen bg-[#0F1720] text-[#E7ECF2]">
       <Navbar connected={connected} />
-      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 p-6 md:grid-cols-3">
-        <div className="md:col-span-1">
+      <main className="mx-auto max-w-6xl space-y-6 p-6">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <ConfidenceCard latest={signals[0] ?? null} />
-        </div>
-        <div className="md:col-span-1">
           <SignalFeed signals={signals} />
-        </div>
-        <div className="md:col-span-1">
           <RiskPanel decisions={decisions} />
+        </div>
+        <AnalystDetail latest={scores[0] ?? null} />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <HistoryChart symbol={symbol} />
+          <BestHoursChart symbol={symbol} />
+        </div>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <OutcomesPanel outcomes={outcomes} title="trade outcomes (real signals)" />
+          <OutcomesPanel outcomes={missed} title="missed opportunities (near-misses)" />
         </div>
       </main>
     </div>

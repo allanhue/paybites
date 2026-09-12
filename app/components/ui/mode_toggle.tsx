@@ -9,7 +9,7 @@ export default function ModeToggle() {
   const [pending, setPending] = useState(false);
 
   useEffect(() => {
-    fetch("/api/mode")
+    fetch(`${process.env.NEXT_PUBLIC_API_URL}/mode`)
       .then((r) => r.json())
       .then((d) => setMode(d.mode))
       .catch(() => {});
@@ -19,7 +19,7 @@ export default function ModeToggle() {
     if (next === mode || pending) return;
     setPending(true);
     try {
-      const res = await fetch("/api/mode", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/mode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: next }),

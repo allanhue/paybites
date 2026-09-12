@@ -96,13 +96,35 @@ cd server\python-analyst
 .\venv\Scripts\Activate.ps1
 python analyst.py
 
+or 
+
+$env:STRATEGY_THRESHOLD = "20"
+python analyst.py
+
 # Terminal 3 — Go shield
 cd server\go-shield
 go run main.go
 
 # Terminal 4 — Next.js dashboard
+npm run dev 
+
+
+# Terminal 1
+cd server\go-scanner; go run main.go
+# Terminal 2
+cd server\python-analyst; .\venv\Scripts\Activate.ps1; python analyst.py
+# Terminal 3
+cd server\go-shield; go run main.go
+# Terminal 4 (new)
+cd server\outcome_tracker; .\venv\Scripts\Activate.ps1; python tracker.py
+# Terminal 5
 npm run dev
+
+
 ```
+#terminal 6 
+PS C:\paybites> cd C:\paybites\server\api_gateway
+>> go run main.go
 
 cd C:\paybites
 >> $env:REDIS_URL = "redis://localhost:6379"
