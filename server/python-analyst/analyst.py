@@ -1,7 +1,7 @@
 """
 Bot 2: The Analyst
 
-Now publishes TWO things per tick:
+Publishes TWO things per tick:
   - "market.scores": EVERY scored tick, with full feature + component
     breakdown, for the live Analyst Detail panel and outcome-tracker's
     near-miss detection.
@@ -32,7 +32,7 @@ def main() -> None:
     db.ensure_schema()
     db.start_background_flush()
 
-    print("Smart (Analyst) online. Awaiting tick stream from Go scanner...")
+    print(f"Bot 2 (Analyst) online. Threshold={STRATEGY_THRESHOLD}. Awaiting tick stream...")
 
     for message in pubsub.listen():
         if message["type"] != "message":
@@ -63,7 +63,7 @@ def main() -> None:
             "confidence": score, "action": action,
         })
 
-        # Always publish the full scored tick for live UI + near-miss tracking
+        # Always publish the full scored tick for the live UI + near-miss tracking
         score_payload = {
             "symbol": symbol, "price": price, "score": score,
             "rsi_14": rsi_14, "momentum": mom, "band_position": round(band_pos, 3),
@@ -76,6 +76,8 @@ def main() -> None:
             signal = {
                 "symbol": symbol, "action": "BUY",
                 "confidence": score, "trigger_price": price,
+                "rsi_14": rsi_14, "momentum": mom,
+                "band_position": round(band_pos, 3), "volatility": volatility,
             }
             print(f"Signal: {symbol} BUY @ {price} (confidence {score}%)")
             r.publish("market.signals", json.dumps(signal))

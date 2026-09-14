@@ -1,5 +1,7 @@
 # paybites server — Go/Python multi-agent trading 
 
+
+
 ## What changed from the original sketch
 
 - **Bot 2's "confidence score" is no longer random.** `python-analyst/scoring.py`

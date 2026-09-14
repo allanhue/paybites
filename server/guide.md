@@ -128,9 +128,12 @@ cd C:\paybites\server\api_gateway
 
 #terminal 7
 cd C:\paybites\server\mt5_scanner
-.\venv\Scripts\Activate.ps1
 python scanner.py
 
+
+<!-- terminal 8 -->
+.\venv\Scripts\Activate.ps1
+feeds.py
 
 
 cd C:\paybites
@@ -172,6 +175,8 @@ Be aware of these before you assume the system is "done":
    hasn't been backtested against actual outcomes yet. Treat every signal as
    a hypothesis until you've checked the `signals` table in Neon against
    what price actually did afterward.
+
+   
 4. **No authentication on the dashboard or API routes.** Anyone who can
    reach `localhost:3000` (or wherever you deploy it) can flip
    `config:trading_mode` to `automated`. Fine for local dev; add auth before
