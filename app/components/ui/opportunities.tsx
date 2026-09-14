@@ -1,4 +1,4 @@
-import { ScoreTick } from "@/app/lib/use-signal-stream";
+import { ScoreTick } from "@/app/lib/use_signal-stream";
 
 export default function Opportunities({ scores }: { scores: ScoreTick[] }) {
   const latestBySymbol = new Map<string, ScoreTick>();

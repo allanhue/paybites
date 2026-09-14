@@ -1,4 +1,4 @@
-# paybites server — Go/Python multi-agent trading backend
+# paybites server — Go/Python multi-agent trading 
 
 ## What changed from the original sketch
 
