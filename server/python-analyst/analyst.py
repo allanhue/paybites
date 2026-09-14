@@ -32,7 +32,7 @@ def main() -> None:
     db.ensure_schema()
     db.start_background_flush()
 
-    print("Bot 2 (Analyst) online. Awaiting tick stream from Go scanner...")
+    print("Smart (Analyst) online. Awaiting tick stream from Go scanner...")
 
     for message in pubsub.listen():
         if message["type"] != "message":

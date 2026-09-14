@@ -22,7 +22,7 @@ REDIS_ADDR = os.getenv("REDIS_ADDR", "localhost:6379")
 MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
-SYMBOLS = os.getenv("FOREX_SYMBOLS", "EURUSD,GBPUSD").split(",")
+SYMBOLS = os.getenv("FOREX_SYMBOLS", "XAUUSD,EURUSD,GBPUSD,USDJPY").split(",")
 POLL_SECONDS = float(os.getenv("FOREX_POLL_SECONDS", "1.0"))
 
 RSI_PERIOD = 14
@@ -67,7 +67,7 @@ def main():
     if not mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
 
-    print(f"Forex scanner online. Watching {SYMBOLS} on server {MT5_SERVER}")
+    print(f"Forex scanner online. Watching  on server {MT5_SERVER}")
 
     for s in SYMBOLS:
         mt5.symbol_select(s, True)

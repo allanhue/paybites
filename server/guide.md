@@ -123,8 +123,15 @@ npm run dev
 
 ```
 #terminal 6 
-PS C:\paybites> cd C:\paybites\server\api_gateway
->> go run main.go
+cd C:\paybites\server\api_gateway
+ go run main.go
+
+#terminal 7
+cd C:\paybites\server\mt5_scanner
+.\venv\Scripts\Activate.ps1
+python scanner.py
+
+
 
 cd C:\paybites
 >> $env:REDIS_URL = "redis://localhost:6379"
@@ -229,3 +236,14 @@ Keep adding to this as you hit things — future you will thank you.
 | Hydration warning mentioning `data-my-extension` | Browser extension injecting attributes into `<body>` before React loads | Add `suppressHydrationWarning` to `<body>` in `layout.tsx`; not a real bug |
 | PowerShell rejects `&&` | PowerShell doesn't support bash-style chaining | Use `;` instead, or run commands on separate lines |
 | `python analyst.py` → "No such file or directory" | Ran from wrong working directory | `cd` into `server/python-analyst` first |
+
+
+How would you actually know when to trade?
+
+Right now, "confidence" is just this rule-based math you've seen (RSI + momentum + band position). A single high number does not mean the trade will win — it means the current price pattern matches a hypothesis you coded in. The only way to actually know if that hypothesis holds up is the piece you already have but haven't accumulated data in yet: the outcomes panel.
+
+Here's the real workflow for "how do I know":
+
+Let signals fire and resolve for days/weeks (win/loss/timeout, tracked automatically).
+Look at the win rate by hour chart and trade outcomes panel — not the live score. If, say, signals above 75% confidence actually won 60% of the time historically, that's evidence. If they won 45% of the time, the scoring needs rework before you trust it with money.
+Right now both panels say "Nothing resolved yet" — meaning you genuinely don't have evidence either way yet. Any trade you place today is still a bet on an unproven hypothesis, not a validated edge.

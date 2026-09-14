@@ -48,7 +48,7 @@ func main() {
 	pubsub := rdb.Subscribe(ctx, "market.signals")
 	defer pubsub.Close()
 
-	log.Printf("Bot 3 (Risk Shield) active. Balance ceiling for strict mode: $%.2f", maxBalance)
+	log.Printf("Horro (Risk Shield) active. Balance ceiling for strict mode: $%.2f", maxBalance)
 
 	for msg := range pubsub.Channel() {
 		var sig TradeSignal

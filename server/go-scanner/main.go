@@ -25,8 +25,7 @@ import (
 )
 
 // Symbols you want to scan. Add/remove freely — each symbol gets its own
-// independent rolling window.
-var symbols = []string{"btcusdt", "ethusdt"}
+var symbols = []string{"btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "dogeusdt"}
 
 const rsiPeriod = 14
 const windowSize = 60 // number of recent prices kept for volatility calc
@@ -141,7 +140,7 @@ func main() {
 		RawQuery: "streams=" + streamParam,
 	}
 
-	log.Printf("Bot 1 (Scanner) connecting to %s", u.String())
+	log.Printf("Smith (Scanner) connecting to %s", u.String())
 
 	for {
 		if err := runOnce(ctx, u.String(), rdb, series); err != nil {
@@ -158,7 +157,7 @@ func runOnce(ctx context.Context, wsURL string, rdb *redis.Client, series map[st
 	}
 	defer conn.Close()
 
-	log.Println("Bot 1 (Scanner) connected. Streaming live trades...")
+	log.Println("Smith (Scanner) connected. Streaming live trades...")
 
 	for {
 		_, msg, err := conn.ReadMessage()
