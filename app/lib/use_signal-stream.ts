@@ -2,6 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 
+
+export type NewsItem = {
+  headline: string;
+  link: string;
+  source: string;
+  sentiment: number;
+  symbols: string[];
+  timestamp: number;
+};
 export type TradeSignal = { symbol: string; action: string; confidence: number; trigger_price: number };
 export type TradeDecision = { symbol: string; action: string; confidence: number; price: number; status: "approved" | "blocked" | "pending_approval"; reason: string; timestamp: number };
 export type ScoreTick = { symbol: string; price: number; score: number; rsi_14: number; momentum: number; band_position: number; volatility: number; components: Record<string, number>; threshold: number };
@@ -22,6 +31,7 @@ export function useSignalStream(maxItems = 50) {
   const [missed, setMissed] = useState<TradeOutcome[]>([]);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const [news, setNews] = useState<NewsItem[]>([]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
@@ -59,8 +69,13 @@ const es = new EventSource(`${process.env.NEXT_PUBLIC_API_URL}/events`);
       setMissed((prev) => [JSON.parse((e as MessageEvent).data), ...prev].slice(0, maxItems));
     });
 
+    es.addEventListener("market.news", (e) => {
+  const data = JSON.parse((e as MessageEvent).data) as NewsItem;
+  setNews((prev) => [data, ...prev].slice(0, maxItems));
+});
+
     return () => es.close();
   }, [maxItems]);
 
-  return { signals, decisions, scores, outcomes, missed, connected };
+return { signals, decisions, scores, outcomes, missed, news, connected };
 }

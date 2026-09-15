@@ -9,13 +9,15 @@ import OutcomesPanel from "@/app/components/ui/outcome_panel";
 import HistoryChart from "@/app/components/ui/history_chart";
 import BestHoursChart from "@/app/components/ui/best_hours-chart";
 import Opportunities from "@/app/components/ui/opportunities";
+import NewsFeed from "@/app/components/ui/news_feed";
+
 
 
 
 import { useSignalStream } from "@/app/lib/use_signal-stream";
 
 export default function DashboardPage() {
-  const { signals, decisions, scores, outcomes, missed, connected } = useSignalStream();
+  const { signals, decisions, scores, outcomes, missed,news,  connected } = useSignalStream();
   const symbol = signals[0]?.symbol || "BTCUSDT";
 
   return (
@@ -29,6 +31,7 @@ export default function DashboardPage() {
         </div>
         <AnalystDetail latest={scores[0] ?? null} />
         <Opportunities scores={scores} />
+        <NewsFeed news={news} />
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <HistoryChart symbol={symbol} />
           <BestHoursChart symbol={symbol} />

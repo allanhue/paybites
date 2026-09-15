@@ -22,6 +22,7 @@ REDIS_ADDR = os.getenv("REDIS_ADDR", "localhost:6379")
 MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
+MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 SYMBOLS = os.getenv("FOREX_SYMBOLS", "XAUUSD,EURUSD,GBPUSD,USDJPY").split(",")
 POLL_SECONDS = float(os.getenv("FOREX_POLL_SECONDS", "1.0"))
 
@@ -64,10 +65,11 @@ def volatility(prices: deque) -> float:
 
 
 def main():
-    if not mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
+    if not mt5.initialize(path=MT5_TERMINAL_PATH, login=MT5_LOGIN, password=MT5_PASSWORD,
+                           server=MT5_SERVER, timeout=30000):
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
 
-    print(f"Forex scanner online. Watching  on server {MT5_SERVER}")
+    print(f"Forex scanner online. Watching {SYMBOLS} on server {MT5_SERVER}")
 
     for s in SYMBOLS:
         mt5.symbol_select(s, True)

@@ -128,12 +128,22 @@ cd C:\paybites\server\api_gateway
 
 #terminal 7
 cd C:\paybites\server\mt5_scanner
+.\venv\Scripts\Activate.ps1;
 python scanner.py
 
 
 <!-- terminal 8 -->
+cd C:\paybites\server\news_scanner
+.\venv\Scripts\Activate.ps1;
+python scanner.py
+
+
+<!-- terminal 9  model training-->
+
+cd C:\paybites\server\model_trainer
+python -m venv venv
 .\venv\Scripts\Activate.ps1
-feeds.py
+python train_model.py
 
 
 cd C:\paybites

@@ -29,6 +29,8 @@ var (
 func main() {
 	redisAddr := getenv("REDIS_ADDR", "localhost:6379")
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+	
+	
 
 	dsn := os.Getenv("DATABASE_URL")
 	var err error
@@ -77,10 +79,10 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	sub := rdb.Subscribe(r.Context(),
-		"market.signals", "trade.decisions", "market.scores",
-		"trade.outcomes", "trade.missed",
-	)
+sub := rdb.Subscribe(r.Context(),
+	"market.signals", "trade.decisions", "market.scores",
+	"trade.outcomes", "trade.missed", "market.news",
+)
 	defer sub.Close()
 
 	ch := sub.Channel()
