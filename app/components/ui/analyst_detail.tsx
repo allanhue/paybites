@@ -1,4 +1,4 @@
-import { ScoreTick } from "@/app/lib/use_signal-stream";
+import { ScoreTick } from "@/app/lib/use_signal_stream";
 
 export default function AnalystDetail({ latest }: { latest: ScoreTick | null }) {
   if (!latest) {

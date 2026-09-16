@@ -5,8 +5,8 @@ import { useEffect, useRef, useState } from "react";
 
 export type NewsItem = {
   headline: string;
-  link: string;
-  source: string;
+  link?: string;
+  source?: string;
   sentiment: number;
   symbols: string[];
   timestamp: number;
@@ -38,7 +38,8 @@ export function useSignalStream(maxItems = 50) {
       Notification.requestPermission();
     }
 
-const es = new EventSource(`${process.env.NEXT_PUBLIC_API_URL}/events`);
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8090";
+    const es = new EventSource(`${apiUrl}/events`);
     esRef.current = es;
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
@@ -70,9 +71,19 @@ const es = new EventSource(`${process.env.NEXT_PUBLIC_API_URL}/events`);
     });
 
     es.addEventListener("market.news", (e) => {
-  const data = JSON.parse((e as MessageEvent).data) as NewsItem;
-  setNews((prev) => [data, ...prev].slice(0, maxItems));
-});
+      try {
+        const data = JSON.parse((e as MessageEvent).data) as NewsItem;
+        const item: NewsItem = {
+          ...data,
+          sentiment: Number(data.sentiment ?? 0),
+          symbols: Array.isArray(data.symbols) ? data.symbols : [],
+          timestamp: Number(data.timestamp ?? Date.now()),
+        };
+        setNews((prev) => [item, ...prev].slice(0, maxItems));
+      } catch (err) {
+        console.error("Failed to parse market.news event", err);
+      }
+    });
 
     return () => es.close();
   }, [maxItems]);

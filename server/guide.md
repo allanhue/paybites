@@ -84,29 +84,12 @@ populate — no crash, no error).
 
 ## 4. Running it locally (native Windows, no Docker)
 
-Four terminals, in order:
-
-```powershell
-# Terminal 1 — Go scanner
-cd server\go-scanner
-go run main.go
-
-# Terminal 2 — Python analyst
-cd server\python-analyst
-.\venv\Scripts\Activate.ps1
-python analyst.py
-
 or 
 
 $env:STRATEGY_THRESHOLD = "20"
 python analyst.py
 
-# Terminal 3 — Go shield
-cd server\go-shield
-go run main.go
 
-# Terminal 4 — Next.js dashboard
-npm run dev 
 
 
 # Terminal 1
@@ -149,6 +132,35 @@ python train_model.py
 cd C:\paybites
 >> $env:REDIS_URL = "redis://localhost:6379"
 >> npm run dev
+
+
+
+# paybites — every window service
+# Run from the project root: C:\paybites
+
+$ErrorActionPreference = "Stop"
+Write-Host "Starting paybites services..." -ForegroundColor Cyan
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\go-scanner; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\mt5_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\python-analyst; .\venv\Scripts\Activate.ps1; python analyst.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\go-shield; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\outcome_tracker; .\venv\Scripts\Activate.ps1; python tracker.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\news_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\api_gateway; go run main.go"
+
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
+
+Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started" -ForegroundColor Yellow
+
+Write-Host "Launching dashboard..." -ForegroundColor Green
+npm run dev
+
+
+
+
+
 
 
 

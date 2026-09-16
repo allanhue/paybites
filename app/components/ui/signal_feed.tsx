@@ -1,4 +1,4 @@
-import { TradeSignal } from "@/app/lib/use_signal-stream";
+import { TradeSignal } from "@/app/lib/use_signal_stream";
 
 export default function SignalFeed({ signals }: { signals: TradeSignal[] }) {
   return (

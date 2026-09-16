@@ -7,9 +7,7 @@ tracks each until it resolves into win/loss/timeout, and writes to Neon.
 Database writes are fully asynchronous: nothing in the Redis message loop
 ever blocks on a network call to Neon. Inserts/updates are queued in memory
 and flushed by a background thread every DB_FLUSH_SECONDS, exactly like
-python_analyst's db.py. This makes the tracker resilient to volume spikes —
-a flood of signals queues up in memory instead of stalling the Redis
-connection and getting forcibly disconnected.
+python_analyst's db.py.
 """
 
 import json
@@ -49,14 +47,13 @@ CREATE TABLE IF NOT EXISTS trade_outcomes (
     momentum DOUBLE PRECISION,
     band_position DOUBLE PRECISION,
     volatility DOUBLE PRECISION,
+    macd_hist DOUBLE PRECISION,
     exit_price DOUBLE PRECISION,
     outcome TEXT,
     pct_change DOUBLE PRECISION,
     resolved_at TIMESTAMPTZ
 );
 """
-
-# --- async write queue -------------------------------------------------
 
 _insert_queue: list[dict] = []
 _update_queue: list[dict] = []
@@ -75,6 +72,7 @@ def ensure_schema():
             cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS momentum DOUBLE PRECISION;")
             cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS band_position DOUBLE PRECISION;")
             cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS volatility DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS macd_hist DOUBLE PRECISION;")
             cur.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS trade_outcomes_client_id_idx "
                 "ON trade_outcomes(client_id);"
@@ -111,9 +109,9 @@ def _flush():
                         """
                         INSERT INTO trade_outcomes
                             (client_id, kind, symbol, entry_price, confidence,
-                             rsi_14, momentum, band_position, volatility)
+                             rsi_14, momentum, band_position, volatility, macd_hist)
                         VALUES (%(client_id)s, %(kind)s, %(symbol)s, %(entry_price)s, %(confidence)s,
-                                %(rsi_14)s, %(momentum)s, %(band_position)s, %(volatility)s)
+                                %(rsi_14)s, %(momentum)s, %(band_position)s, %(volatility)s, %(macd_hist)s)
                         ON CONFLICT (client_id) DO NOTHING
                         """,
                         inserts,
@@ -130,7 +128,7 @@ def _flush():
                     )
             conn.commit()
         print(f"[tracker] flushed {len(inserts)} inserts, {len(updates)} updates")
-    except Exception as e:  # noqa: BLE001 — batch sync should never crash the tracker
+    except Exception as e:  # noqa: BLE001
         print(f"[tracker] flush failed, re-queueing: {e}")
         with _lock:
             _insert_queue[:0] = inserts
@@ -144,8 +142,6 @@ def start_background_flush():
             _flush()
     threading.Thread(target=loop, daemon=True).start()
 
-
-# --- pending-check tracking (in-memory, unaffected by DB latency) ------
 
 @dataclass
 class PendingCheck:
@@ -173,6 +169,7 @@ def handle_signal(payload: dict, kind: str):
         "entry_price": price, "confidence": confidence,
         "rsi_14": payload.get("rsi_14"), "momentum": payload.get("momentum"),
         "band_position": payload.get("band_position"), "volatility": payload.get("volatility"),
+        "macd_hist": payload.get("macd_hist"),
     })
 
     now = time.time()
@@ -248,7 +245,7 @@ def main():
                     "symbol": payload["symbol"], "price": payload["price"],
                     "confidence": score, "rsi_14": payload["rsi_14"],
                     "momentum": payload["momentum"], "band_position": payload["band_position"],
-                    "volatility": payload["volatility"],
+                    "volatility": payload["volatility"], "macd_hist": payload.get("macd_hist"),
                 }, kind="near_miss")
         elif channel == "market.ticks":
             check_pending_against_price(payload["symbol"], float(payload["price"]))

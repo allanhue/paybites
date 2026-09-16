@@ -50,9 +50,12 @@ def main() -> None:
         mom = momentum.push_and_get_momentum(symbol, price)
         band_pos = bands.push_and_get_band_position(symbol, price)
 
+        macd_hist = float(tick.get("macd_hist", 0.0))
+
         features = Features(
             symbol=symbol, price=price, rsi_14=rsi_14,
             volatility=volatility, momentum=mom, band_position=band_pos,
+            macd_hist=macd_hist,
         )
         score, components = rule_based_score(features)
         action = "BUY" if score > STRATEGY_THRESHOLD else "HOLD"

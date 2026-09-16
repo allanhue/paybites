@@ -26,11 +26,11 @@ var (
 	ctx = context.Background()
 )
 
+const newsCacheKey = "news:latest"
+
 func main() {
 	redisAddr := getenv("REDIS_ADDR", "localhost:6379")
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
-	
-	
 
 	dsn := os.Getenv("DATABASE_URL")
 	var err error
@@ -79,10 +79,12 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-sub := rdb.Subscribe(r.Context(),
-	"market.signals", "trade.decisions", "market.scores",
-	"trade.outcomes", "trade.missed", "market.news",
-)
+	replayLatestNews(w, flusher, r)
+
+	sub := rdb.Subscribe(r.Context(),
+		"market.signals", "trade.decisions", "market.scores",
+		"trade.outcomes", "trade.missed", "market.news",
+	)
 	defer sub.Close()
 
 	ch := sub.Channel()
@@ -103,6 +105,21 @@ sub := rdb.Subscribe(r.Context(),
 	}
 }
 
+func replayLatestNews(w http.ResponseWriter, flusher http.Flusher, r *http.Request) {
+	items, err := rdb.LRange(r.Context(), newsCacheKey, 0, 49).Result()
+	if err != nil {
+		log.Printf("warning: could not replay cached news: %v", err)
+		return
+	}
+
+	for i := len(items) - 1; i >= 0; i-- {
+		fmt.Fprintf(w, "event: market.news\ndata: %s\n\n", items[i])
+	}
+	if len(items) > 0 {
+		flusher.Flush()
+	}
+}
+
 func handleMode(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -113,7 +130,9 @@ func handleMode(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"mode": mode})
 
 	case http.MethodPost:
-		var body struct{ Mode string `json:"mode"` }
+		var body struct {
+			Mode string `json:"mode"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
@@ -132,7 +151,6 @@ func handleMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
-
 
 type signalRow struct {
 	Symbol     string  `json:"symbol"`
@@ -232,6 +250,9 @@ func getenv(key, fallback string) string {
 	}
 	return fallback
 }
+
+const approvalTTLSeconds = 60 // matches the frontend countdown
+
 func handleApprove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -241,11 +262,19 @@ func handleApprove(w http.ResponseWriter, r *http.Request) {
 		Symbol       string  `json:"symbol"`
 		Confidence   float64 `json:"confidence"`
 		TriggerPrice float64 `json:"trigger_price"`
+		Timestamp    int64   `json:"timestamp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+
+	ageSeconds := (time.Now().UnixMilli() - sig.Timestamp) / 1000
+	if ageSeconds > approvalTTLSeconds {
+		http.Error(w, "signal expired — price has likely moved, refresh and wait for a new signal", http.StatusGone)
+		return
+	}
+
 	payload, _ := json.Marshal(sig)
 	if err := rdb.Publish(r.Context(), "trade.execute", payload).Err(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

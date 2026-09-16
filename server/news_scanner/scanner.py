@@ -24,6 +24,8 @@ load_dotenv()
 
 REDIS_ADDR = os.getenv("REDIS_ADDR", "localhost:6379")
 POLL_SECONDS = float(os.getenv("NEWS_POLL_SECONDS", "120"))
+NEWS_CACHE_KEY = os.getenv("NEWS_CACHE_KEY", "news:latest")
+NEWS_CACHE_LIMIT = int(os.getenv("NEWS_CACHE_LIMIT", "50"))
 
 host, port = REDIS_ADDR.split(":")
 r = redis.Redis(host=host, port=int(port), db=0)
@@ -69,7 +71,12 @@ def poll_once():
                     "symbols": symbols,
                     "timestamp": int(time.time() * 1000),
                 }
-                r.publish("market.news", json.dumps(payload))
+                encoded = json.dumps(payload)
+                pipe = r.pipeline()
+                pipe.lpush(NEWS_CACHE_KEY, encoded)
+                pipe.ltrim(NEWS_CACHE_KEY, 0, NEWS_CACHE_LIMIT - 1)
+                pipe.publish("market.news", encoded)
+                pipe.execute()
                 print(f"[news] ({sentiment['compound']:+.2f}) {headline[:80]}")
 
 

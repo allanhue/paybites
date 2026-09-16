@@ -1,4 +1,4 @@
-import { TradeOutcome } from "@/app/lib/use_signal-stream";
+import { TradeOutcome } from "@/app/lib/use_signal_stream";
 
 const color: Record<string, string> = { win: "#35D0A0", loss: "#E8A23D", timeout: "#7C8B9C" };
 

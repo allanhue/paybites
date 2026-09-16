@@ -27,8 +27,8 @@ class Features:
     rsi_14: float
     volatility: float
     momentum: float
-    band_position: float  # -1 = at lower band, 0 = at mean, +1 = at upper band
-
+    band_position: float
+    macd_hist: float = 0.0
 
 class MomentumTracker:
     def __init__(self, window: int = 10):
@@ -66,9 +66,6 @@ class BandTracker:
 
 
 def score_components(f: Features) -> dict:
-    """Returns each sub-component separately so the dashboard can show the
-    breakdown, not just the final number."""
-
     if f.rsi_14 <= 40:
         rsi_component = min(100.0, (40 - f.rsi_14) * 2.5)
     elif f.rsi_14 >= 60:
@@ -78,14 +75,17 @@ def score_components(f: Features) -> dict:
 
     momentum_component = max(0.0, min(100.0, f.momentum * 100 * 100))
 
-    # Band component: reward being at/below the lower band (band_position <= -1),
-    # same 0-100 scale as the others.
     if f.band_position <= -1.0:
         band_component = 100.0
     elif f.band_position >= 0:
         band_component = 0.0
     else:
         band_component = (-f.band_position) * 100.0
+
+    # MACD confirmation: positive, rising histogram adds a small confluence
+    # boost. This does NOT drive the score on its own — it only confirms or
+    # slightly discounts what RSI/momentum/band already indicate.
+    macd_component = 100.0 if f.macd_hist > 0 else 0.0
 
     if f.volatility > 0.004:
         vol_penalty = min(1.0, f.volatility / 0.004) * 0.5
@@ -96,20 +96,19 @@ def score_components(f: Features) -> dict:
         "rsi_component": round(rsi_component, 2),
         "momentum_component": round(momentum_component, 2),
         "band_component": round(band_component, 2),
+        "macd_component": round(macd_component, 2),
         "vol_penalty": round(vol_penalty, 3),
     }
 
 
 def rule_based_score(f: Features) -> tuple[float, dict]:
-    """Weighting (tune as you backtest):
-      - RSI pressure:    35%
-      - Momentum:        30%
-      - Band position:   25% (new)
-      - Volatility penalty applied last, up to -20%
-    Returns (final_score, components_dict) so callers can log/display both.
+    """Weighting:
+      RSI 30% / Momentum 25% / Band 25% / MACD confirmation 20%
+      Volatility penalty applied last, up to -20%.
     """
     c = score_components(f)
-    raw = (c["rsi_component"] * 0.35) + (c["momentum_component"] * 0.30) + (c["band_component"] * 0.25)
+    raw = (c["rsi_component"] * 0.30) + (c["momentum_component"] * 0.25) + \
+          (c["band_component"] * 0.25) + (c["macd_component"] * 0.20)
     raw *= (1.0 - c["vol_penalty"] * 0.20)
     final = round(max(0.0, min(100.0, raw)), 2)
     return final, c
