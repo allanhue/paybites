@@ -16,11 +16,13 @@ import redis
 import db
 from scoring import BandTracker, Features, MomentumTracker, rule_based_score
 
+
 REDIS_ADDR = os.getenv("REDIS_ADDR", "localhost:6379")
 STRATEGY_THRESHOLD = float(os.getenv("STRATEGY_THRESHOLD", "75.0"))
 
 host, port = REDIS_ADDR.split(":")
 r = redis.Redis(host=host, port=int(port), db=0)
+
 pubsub = r.pubsub()
 pubsub.subscribe("market.ticks")
 
@@ -32,7 +34,11 @@ def main() -> None:
     db.ensure_schema()
     db.start_background_flush()
 
-    print(f"Bot 2 (Analyst) online. Threshold={STRATEGY_THRESHOLD}. Awaiting tick stream...")
+    print(
+        f"Bot 2 (Analyst) online. "
+        f"Threshold={STRATEGY_THRESHOLD}. "
+        f"Awaiting tick stream..."
+    )
 
     for message in pubsub.listen():
         if message["type"] != "message":
@@ -45,45 +51,85 @@ def main() -> None:
 
         symbol = tick["symbol"]
         price = float(tick["price"])
+
         rsi_14 = float(tick.get("rsi_14", 50.0))
         volatility = float(tick.get("volatility", 0.0))
+
         mom = momentum.push_and_get_momentum(symbol, price)
         band_pos = bands.push_and_get_band_position(symbol, price)
 
         macd_hist = float(tick.get("macd_hist", 0.0))
 
         features = Features(
-            symbol=symbol, price=price, rsi_14=rsi_14,
-            volatility=volatility, momentum=mom, band_position=band_pos,
+            symbol=symbol,
+            price=price,
+            rsi_14=rsi_14,
+            volatility=volatility,
+            momentum=mom,
+            band_position=band_pos,
             macd_hist=macd_hist,
         )
+
         score, components = rule_based_score(features)
+
         action = "BUY" if score > STRATEGY_THRESHOLD else "HOLD"
 
+        # Store every scored tick
         db.queue_signal({
-            "symbol": symbol, "price": price, "rsi_14": rsi_14,
-            "volatility": volatility, "momentum": mom,
-            "confidence": score, "action": action,
+            "symbol": symbol,
+            "price": price,
+            "rsi_14": rsi_14,
+            "volatility": volatility,
+            "momentum": mom,
+            "macd_hist": macd_hist,
+            "confidence": score,
+            "action": action,
         })
 
-        # Always publish the full scored tick for the live UI + near-miss tracking
+        # Always publish the full scored tick for:
+        # - live Analyst UI
+        # - near-miss detection
         score_payload = {
-            "symbol": symbol, "price": price, "score": score,
-            "rsi_14": rsi_14, "momentum": mom, "band_position": round(band_pos, 3),
-            "volatility": volatility, "components": components,
+            "symbol": symbol,
+            "price": price,
+            "score": score,
+            "rsi_14": rsi_14,
+            "momentum": mom,
+            "band_position": round(band_pos, 3),
+            "volatility": volatility,
+            "macd_hist": macd_hist,
+            "components": components,
             "threshold": STRATEGY_THRESHOLD,
         }
-        r.publish("market.scores", json.dumps(score_payload))
 
+        r.publish(
+            "market.scores",
+            json.dumps(score_payload),
+        )
+
+        # Only publish strategy signals when threshold is crossed
         if action == "BUY":
             signal = {
-                "symbol": symbol, "action": "BUY",
-                "confidence": score, "trigger_price": price,
-                "rsi_14": rsi_14, "momentum": mom,
-                "band_position": round(band_pos, 3), "volatility": volatility,
+                "symbol": symbol,
+                "action": "BUY",
+                "confidence": score,
+                "trigger_price": price,
+                "rsi_14": rsi_14,
+                "momentum": mom,
+                "band_position": round(band_pos, 3),
+                "volatility": volatility,
+                "macd_hist": macd_hist,
             }
-            print(f"Signal: {symbol} BUY @ {price} (confidence {score}%)")
-            r.publish("market.signals", json.dumps(signal))
+
+            print(
+                f"Signal: {symbol} BUY @ {price} "
+                f"(confidence {score}%)"
+            )
+
+            r.publish(
+                "market.signals",
+                json.dumps(signal),
+            )
 
 
 if __name__ == "__main__":

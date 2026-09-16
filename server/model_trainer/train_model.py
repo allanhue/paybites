@@ -8,6 +8,7 @@ import joblib
 import pandas as pd
 import psycopg
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -39,7 +40,8 @@ def load_data() -> pd.DataFrame:
           AND volatility IS NOT NULL
         ORDER BY entry_time ASC
     """
-    with psycopg.connect(DATABASE_URL) as conn:
+    engine = create_engine(DATABASE_URL)
+    with engine.connect() as conn:
         return pd.read_sql(query, conn)
 
 
@@ -57,9 +59,23 @@ def main():
     if len(df) < 200:
         print("\nWARNING: fewer than 200 labeled examples. The model may be fitting noise.")
 
+    print("\n==============================")
+    print("FEATURE DIAGNOSTICS (pre-fill)")
+    print("==============================")
+    print("\nDtypes:")
+    print(df[FEATURES].dtypes)
+    print("\nSummary stats:")
+    print(df[FEATURES].describe())
+    print(f"\nmacd_hist NULL fraction (pre-fill): {df['macd_hist'].isna().mean():.4f}")
+    print("\nPer-feature spread:")
+    for feat in FEATURES:
+        nunique = df[feat].nunique()
+        std = pd.to_numeric(df[feat], errors="coerce").std()
+        print(f"  {feat:20s} nunique={nunique:<8} std={std:.6f}")
+
     # macd_hist may be NULL on older rows (added after the schema migration) —
     # fill with 0 (neutral) rather than dropping rows, so old data isn't wasted.
-    df["macd_hist"] = df["macd_hist"].fillna(0.0)
+    df["macd_hist"] = df["macd_hist"].fillna(0.0).infer_objects(copy=False)
 
     y = (df["outcome"] == "win").astype(int)
 
