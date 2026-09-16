@@ -141,16 +141,28 @@ cd C:\paybites
 $ErrorActionPreference = "Stop"
 Write-Host "Starting paybites services..." -ForegroundColor Cyan
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\go-scanner; go run main.go"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\mt5_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\python-analyst; .\venv\Scripts\Activate.ps1; python analyst.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\go-shield; go run main.go"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\outcome_tracker; .\venv\Scripts\Activate.ps1; python tracker.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\news_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\api_gateway; go run main.go"
+$loadEnv = @'
+function Load-EnvFile([string]$Path) {
+  if (-not (Test-Path $Path)) { return }
+  Get-Content $Path | ForEach-Object {
+    if ($_ -match '^\s*$' -or $_ -match '^\s*#') { return }
+    $name, $value = $_ -split '=', 2
+    if ($name) {
+      [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+    }
+  }
+}
+'@
 
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\go-scanner; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\mt5_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\python-analyst; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python analyst.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go-shield; Load-EnvFile ..\python-analyst\.env; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\outcome_tracker; Load-EnvFile ..\python-analyst\.env; .\venv\Scripts\Activate.ps1; python tracker.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\news_scanner; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python scanner.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\api_gateway; Load-EnvFile .env; go run main.go"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
 
 Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started" -ForegroundColor Yellow
 
@@ -263,7 +275,9 @@ Keep adding to this as you hit things — future you will thank you.
 | Hydration warning mentioning `data-my-extension` | Browser extension injecting attributes into `<body>` before React loads | Add `suppressHydrationWarning` to `<body>` in `layout.tsx`; not a real bug |
 | PowerShell rejects `&&` | PowerShell doesn't support bash-style chaining | Use `;` instead, or run commands on separate lines |
 | `python analyst.py` → "No such file or directory" | Ran from wrong working directory | `cd` into `server/python-analyst` first |
-
+| Analytics charts show empty history even though Neon has rows | `server/api_gateway/.env` exists, but `go run main.go` does not load `.env` automatically | Start the gateway from a shell where `DATABASE_URL` is already exported, or load `server/api_gateway/.env` into the PowerShell process before `go run main.go` |
+| Confidence history stops updating while live scores still stream | `server/python-analyst/.env` exists, but `analyst.py` does not load `.env` automatically | Start the analyst from a shell where `DATABASE_URL` is already exported, or load `server/python-analyst/.env` before `python analyst.py` |
+| Latest signal confidence, signal feed, and risk shield stay empty | Bot 2 is publishing `market.scores`, but no score has crossed `STRATEGY_THRESHOLD`; Bot 3 only receives `market.signals` | Check live scores first. Empty signal/decision panels are expected when scores remain below the threshold |
 
 How would you actually know when to trade?
 

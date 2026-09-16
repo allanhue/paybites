@@ -16,6 +16,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,6 +30,11 @@ var (
 const newsCacheKey = "news:latest"
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("no .env file found, relying on real environment variables")
+	}
+	// startHealthServer() // if you added the earlier health-check line, keep it here too
+
 	redisAddr := getenv("REDIS_ADDR", "localhost:6379")
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
 
