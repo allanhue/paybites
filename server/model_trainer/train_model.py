@@ -34,16 +34,17 @@ def load_data() -> pd.DataFrame:
                confidence, outcome, kind, entry_time
         FROM trade_outcomes
         WHERE outcome IN ('win', 'loss')
+          AND entry_time >= '2026-09-16 18:00:00+00'
           AND rsi_14 IS NOT NULL
           AND momentum IS NOT NULL
           AND band_position IS NOT NULL
           AND volatility IS NOT NULL
+          AND macd_hist IS NOT NULL
         ORDER BY entry_time ASC
     """
     engine = create_engine(DATABASE_URL)
     with engine.connect() as conn:
         return pd.read_sql(query, conn)
-
 
 def main():
     df = load_data()
@@ -73,9 +74,9 @@ def main():
         std = pd.to_numeric(df[feat], errors="coerce").std()
         print(f"  {feat:20s} nunique={nunique:<8} std={std:.6f}")
 
-    # macd_hist may be NULL on older rows (added after the schema migration) —
-    # fill with 0 (neutral) rather than dropping rows, so old data isn't wasted.
-    df["macd_hist"] = df["macd_hist"].fillna(0.0).infer_objects(copy=False)
+    # # macd_hist may be NULL on older rows (added after the schema migration) —
+    # # fill with 0 (neutral) rather than dropping rows, so old data isn't wasted.
+    # df["macd_hist"] = df["macd_hist"].fillna(0.0).infer_objects(copy=False)
 
     y = (df["outcome"] == "win").astype(int)
 

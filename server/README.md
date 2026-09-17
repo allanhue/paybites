@@ -1,72 +1,87 @@
-# paybites server — Go/Python multi-agent trading 
+# paybites — Go/Python multi-agent trading research system
 
+A multi-agent pipeline that scans live crypto markets, scores opportunities with an explainable rule-based
+engine, gates every trade through a risk shield, and tracks real outcomes
+so the scoring can eventually be validated (or replaced) with a trained
+model. Two dashboards: Live Ops and Analytics & News.
 
+**Current status: research/paper mode.** Nothing trades automatically
+unless you explicitly fund an account and flip `config:trading_mode` to
+`automated` — the default is always `copilot` (human-in-the-loop approval).
 
 ## What changed from the original sketch
 
-- **Bot 2's "confidence score" is no longer random.** `python-analyst/scoring.py`
-  computes a real, explainable score from RSI-14 + short-window momentum +
-  a volatility penalty. It's a rule-based baseline, not a trained model —
-  see the docstring at the top of that file for exactly how to turn it into
-  one once you've logged enough outcomes.
-- **Neon writes are batched**, not per-tick. `python-analyst/db.py` buffers
-  scored signals in memory and flushes the whole batch every
-  `DB_FLUSH_SECONDS` (default 15s). If Neon is briefly unreachable, records
-  just queue up and retry on the next flush.
-- **Bot 3 never auto-executes by default.** It reads a `config:trading_mode`
-  key from Redis (`copilot` or `automated`). In `copilot` mode it publishes a
-  `pending_approval` decision for a human to review on the dashboard; only in
-  `automated` mode does it attempt `placeBrokerOrder`. The default is
-  `copilot` even if the key is missing.
-- **`placeBrokerOrder` in go-shield/main.go is a stub.** It logs what it
-  *would* do. Wire in your actual broker/exchange SDK there once you've
-  picked one — that's the one function that moves real money, so it deserves
-  its own careful review, not a generic template.
+- **Scoring is real, not random.** `python_analyst/scoring.py` combines
+  RSI-14, short-window momentum, Bollinger-style band position, and MACD
+  histogram confirmation into an explainable 0-100 score. It's a rule-based
+  baseline, not a trained model — see `server/model_trainer/` for the
+  in-progress work to validate or replace it with something learned from
+  real outcomes.
+- **RSI/MACD are computed on time-based candles, not raw ticks.** An early
+  version computed RSI over the last 14 raw WebSocket trade prints, which
+  saturated at 0 constantly on busy symbols. Fixed by aggregating into
+  1-minute candles first (see `go_scanner/main.go`).
+- **Every scored tick is logged, not just fired signals.** `python_analyst`
+  publishes to `market.scores` (everything) and `market.signals` (only
+  BUY-worthy), and batches writes to Neon so a burst of volume never blocks
+  the live pipeline.
+- **Outcomes are tracked automatically.** `outcome_tracker` watches every
+  signal and near-miss, resolves it into win/loss/timeout against real
+  subsequent price movement, and stores the full feature snapshot — this is
+  the data `model_trainer` eventually learns from.
+- **`go_shield` never auto-executes by default.** Reads `config:trading_mode`
+  from Redis (`copilot` or `automated`, default `copilot`). In `copilot`
+  mode, a `pending_approval` decision with a 60-second expiring "Approve &
+  Trade" button appears on the dashboard; nothing executes without a click.
+- **`execution_bridge` places real orders** — routes to Binance API (crypto)
+  or MT5 (forex) based on symbol shape. Test on Binance Testnet with
+  separate testnet-only API keys before ever setting `BINANCE_TESTNET=false`.
 
 ## Running it locally
 
-```bash
-cd server
-cp ../.env.example .env   # fill in DATABASE_URL with your Neon connection string
-docker compose up --build
+See `server/guide.md` for the full architecture reference. Quick start:
+```powershell
+.\run_all.ps1
 ```
-
-This brings up Redis + all three bots. Watch the logs:
-
-```bash
-docker compose logs -f go-scanner python-analyst go-shield
-```
+This launches every read-only/analytical service. `execution_bridge` and
+`balance_sync` (real money / real balance) are started manually and
+separately, on purpose.
 
 ## Data flow
 
 ```
-Binance WS (public, real data)
+Binance WS + MT5 terminal
         │
         ▼
-go-scanner  →  Redis "market.ticks"   (price + RSI-14 + volatility)
+go_scanner / mt5_scanner  →  Redis "market.ticks"  (candle-based RSI/vol/MACD)
         │
         ▼
-python-analyst  →  Redis "market.signals"   (BUY signals above threshold)
-        │                    │
-        │                    ▼ (batched every DB_FLUSH_SECONDS)
-        │                  Neon (Postgres) — full audit trail of every
-        │                  scored tick, not just the ones that fired
-        ▼
-go-shield  →  Redis "trade.decisions"   (approved / blocked / pending_approval)
+python_analyst  →  "market.scores" (all) + "market.signals" (BUY-worthy)
+        │                              │
+        │ (batched)                    ▼
+        ▼                        outcome_tracker → Neon "trade_outcomes"
+     Neon "signals"
         │
         ▼
-Next.js /api/signals (SSE)  →  dashboard (ConfidenceCard, SignalFeed, RiskPanel)
+go_shield  →  "trade.decisions"  →  "trade.execute" (on approval)
+        │
+        ▼
+execution_bridge  →  Binance / MT5  (real orders)
 ```
 
 ## Before this touches real money
 
-1. Run it in `copilot` mode only, for at least a few days, against your own
-   eyeballs approving/rejecting each `pending_approval` decision manually.
-2. Query the `signals` table in Neon and check: of the trades you'd have
-   taken, how many would actually have been profitable? The rule-based score
-   is a hypothesis, not a guarantee — you need your own backtest before you
-   trust it with the `$10` (or any) balance.
-3. Only then consider wiring `placeBrokerOrder` to a real broker and flipping
-   to `automated` mode — and even then, keep `MAX_BALANCE_USD` /
-   `MIN_CONFIDENCE_LOW_BALANCE` as a hard floor while you gather more live
-   data.
+1. Run `copilot` mode only, for days across varied market conditions,
+   manually reviewing every `pending_approval` against what price actually
+   did next.
+2. Check `trade_outcomes` in Neon for a genuine win rate — not from one
+   afternoon or one market direction. Use the diagnostic queries in
+   `server/guide.md` §9.
+3. Test `execution_bridge` against Binance Testnet (separate testnet API
+   keys) and, for Exness, a demo MT5 account, before any real credentials.
+4. Only then consider `automated` mode, small position sizes first, and
+   never remove `MAX_BALANCE_USD` / `MIN_CONFIDENCE_LOW_BALANCE` as a floor.
+5. Don't trust `model_trainer`'s output for live scoring until it shows a
+   consistent, meaningfully-above-0.5 ROC AUC across multiple retrains on
+   different time windows — see `server/guide.md` §7 for why an early run
+   scored 0.18 (worse than random) and what that taught us.

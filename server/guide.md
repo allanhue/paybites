@@ -1,147 +1,98 @@
 # paybites — System Guide
 
-A reference for how this system fits together, how to run it, and how to add
-features without breaking the existing flow. Keep this updated as you go —
-it's the map back to "why did I build it this way" six weeks from now.
+Rewritten to match current reality. If this needs a big change later,
+regenerate it whole rather than hand-editing — partial edits have broken
+files in this project before.
 
----
-
-## 1. Architecture at a glance
+## 1. Architecture
 
 ```
-Binance WS (public, real data)
-        │
-        ▼
-go-scanner  →  Redis "market.ticks"   (price + RSI-14 + volatility)
-        │
-        ▼
-python-analyst  →  Redis "market.signals"   (BUY signals above threshold)
-        │                    │
-        │                    ▼ (batched every DB_FLUSH_SECONDS)
-        │                  Neon (Postgres) — full audit trail of every
-        │                  scored tick, not just the ones that fired
-        ▼
-go-shield  →  Redis "trade.decisions"   (approved / blocked / pending_approval)
-        │
-        ▼
-Next.js /api/signals (SSE)  →  dashboard (ConfidenceCard, SignalFeed, RiskPanel)
+Binance WS (crypto)              MT5 terminal (forex/gold, Windows only)
+      │                                    │
+      ▼                                    ▼
+go_scanner                          mt5_scanner (Python)
+  builds 1-min candles per symbol      polls MT5, same candle logic
+  RSI-14 + volatility + MACD hist      from closed candles, not raw ticks
+      │                                    │
+      └────────────┬───────────────────────┘
+                    ▼
+             python_analyst
+      → "market.scores"  (EVERY scored tick, all symbols, all the time)
+      → "market.signals" (only ticks above STRATEGY_THRESHOLD)
+      → Neon "signals" table (batched)
+                    │
+                    ▼
+                go_shield
+      → "trade.decisions" (approved / blocked / pending_approval)
+      → "trade.execute"   (only when approved — automated OR manual approve click)
+                    │
+                    ▼
+           execution_bridge (Python)
+      → Binance API (crypto) or MT5 (forex) — REAL ORDERS
+      → "trade.executed"
+
+outcome_tracker — watches signals + near-misses + ticks, resolves each into
+  win/loss/timeout, writes full feature snapshot to Neon "trade_outcomes".
+
+news_scanner — RSS headlines + VADER sentiment → "market.news". Display only,
+  not fed into scoring yet.
+
+model_trainer — offline script, trains a logistic regression on Neon data.
+  NOT wired into live scoring. Purely for research/validation right now.
+
+api_gateway (Go) — the ONLY thing the frontend talks to. SSE stream + /mode,
+  /approve, /history, /status over plain HTTP.
+
+Next.js dashboard — two pages: "/" (Live Ops, fast-moving) and "/analytics"
+  (history/outcomes/news, slower retrospective view). Pure presentation,
+  no Redis/Postgres client of its own.
 ```
 
-Each arrow is a Redis Pub/Sub channel. Nothing here talks to anything else
-directly — every service only knows "I read from channel X, I write to
-channel Y." That's deliberate: you can kill, restart, or rewrite any one bot
-without touching the others, as long as the channel contracts below don't
-change shape.
-
-## 2. Where everything lives
+## 2. Folder map (lowercase_underscore everywhere)
 
 ```
-paybites/ (or paybites/ui, whichever is your Next.js root)
+paybites/                    ← Next.js root (package.json lives here)
 ├── app/
-│   ├── api/
-│   │   ├── signals/route.ts   → SSE bridge: Redis → browser
-│   │   └── mode/route.ts      → reads/writes config:trading_mode
+│   ├── page.tsx              ← Live Ops
+│   ├── analytics/page.tsx    ← Analytics & News
 │   ├── components/
-│   │   ├── navbar/Navbar.tsx
-│   │   └── ui/
-│   │       ├── ConfidenceCard.tsx
-│   │       ├── SignalFeed.tsx
-│   │       ├── RiskPanel.tsx
-│   │       └── ModeToggle.tsx
-│   ├── lib/useSignalStream.ts → client hook consuming the SSE stream
-│   └── page.tsx               → wires the above together
+│   │   ├── navbar/navbar.tsx
+│   │   └── ui/ (confidence_card, signal_feed, risk_panel, mode_toggle,
+│   │            analyst_detail, opportunities, status_banner,
+│   │            outcome_panel, history_chart, best_hours_chart, news_feed)
+│   └── lib/use_signal_stream.ts
+├── .env.local                ← NEXT_PUBLIC_API_URL=http://localhost:8090
 └── server/
-    ├── docker-compose.yml     → optional; you're running natively via Memurai instead
-    ├── go-scanner/            → Bot 1: market data + indicators
-    ├── python-analyst/        → Bot 2: scoring engine
-    └── go-shield/             → Bot 3: risk gate + execution stub
+    ├── go_scanner/            Bot 1 — crypto candles + RSI/vol/MACD
+    ├── mt5_scanner/            Bot 1b — forex/gold candles (needs MT5 open)
+    ├── python_analyst/        Bot 2 — scoring
+    ├── go_shield/              Bot 3 — risk gate + dispatch
+    ├── execution_bridge/       real order placement (Binance + MT5)
+    ├── outcome_tracker/        resolves win/loss/timeout, async DB writes
+    ├── news_scanner/           RSS + sentiment
+    ├── balance_sync/           real balance → Redis
+    ├── model_trainer/          offline training script, NOT live
+    └── api_gateway/            HTTP+SSE gateway for the frontend
 ```
 
-## 3. The channel contracts (don't change these shapes casually)
+## 3. CRITICAL gotcha: Go does not auto-load `.env` files
 
-If you change a field name here, update it on both the publisher and every
-subscriber, or things will silently stop working (JSON fields just won't
-populate — no crash, no error).
+Only Python services use `python-dotenv` (`load_dotenv()`). **Go binaries
+(`go_scanner`, `go_shield`, `api_gateway`) read only real OS environment
+variables** — a `.env` file sitting next to them does nothing on its own.
+This caused the "Analytics history is always empty" and "port already in
+use after restart" bugs.
 
-**`market.ticks`** (go-scanner → python-analyst)
-```json
-{ "symbol": "BTCUSDT", "price": 65250.0, "rsi_14": 42.1, "volatility": 0.0021, "timestamp": 1234567890 }
-```
+Two ways to fix, pick one per service:
+- Add `github.com/joho/godotenv` and call `godotenv.Load()` as the first
+  line of `main()` (done in `api_gateway`).
+- Or load the `.env` into the PowerShell process before `go run` — see the
+  `run_all.ps1` below, which does this for every Go service automatically.
 
-**`market.signals`** (python-analyst → go-shield)
-```json
-{ "symbol": "BTCUSDT", "action": "BUY", "confidence": 81.4, "trigger_price": 65250.0 }
-```
+## 4. Running everything — `run_all.ps1` (project root)
 
-**`trade.decisions`** (go-shield → dashboard)
-```json
-{ "symbol": "BTCUSDT", "action": "BUY", "confidence": 81.4, "price": 65250.0, "status": "pending_approval", "reason": "co-pilot mode — awaiting manual approval", "timestamp": 1234567890 }
-```
-
-**Redis keys (not channels — these are read/written directly, not pub/sub)**
-- `config:trading_mode` → `"copilot"` or `"automated"`, set by `/api/mode`, read by go-shield on every signal.
-- `account:balance_usd` → not yet wired to anything real. Currently nothing sets this, so go-shield's `currentBalanceUSD()` always reads 0 and treats every trade as "low balance" (fail-safe). See §6.
-
-## 4. Running it locally (native Windows, no Docker)
-
-or 
-
-$env:STRATEGY_THRESHOLD = "20"
-python analyst.py
-
-
-
-
-# Terminal 1
-cd server\go-scanner; go run main.go
-# Terminal 2
-cd server\python-analyst; .\venv\Scripts\Activate.ps1; python analyst.py
-# Terminal 3
-cd server\go-shield; go run main.go
-# Terminal 4 (new)
-cd server\outcome_tracker; .\venv\Scripts\Activate.ps1; python tracker.py
-# Terminal 5
-npm run dev
-
-
-```
-#terminal 6 
-cd C:\paybites\server\api_gateway
- go run main.go
-
-#terminal 7
-cd C:\paybites\server\mt5_scanner
-.\venv\Scripts\Activate.ps1;
-python scanner.py
-
-
-<!-- terminal 8 -->
-cd C:\paybites\server\news_scanner
-.\venv\Scripts\Activate.ps1;
-python scanner.py
-
-
-<!-- terminal 9  model training-->
-
-cd C:\paybites\server\model_trainer
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-python train_model.py
-
-
-cd C:\paybites
->> $env:REDIS_URL = "redis://localhost:6379"
->> npm run dev
-
-
-
-.\venv\Scripts\Activate.ps1
-
-# paybites — every window service
-# Run from the project root: C:\paybites
-
+```powershell
 $ErrorActionPreference = "Stop"
-Write-Host "Starting paybites services..." -ForegroundColor Cyan
 
 $loadEnv = @'
 function Load-EnvFile([string]$Path) {
@@ -149,146 +100,112 @@ function Load-EnvFile([string]$Path) {
   Get-Content $Path | ForEach-Object {
     if ($_ -match '^\s*$' -or $_ -match '^\s*#') { return }
     $name, $value = $_ -split '=', 2
-    if ($name) {
-      [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
-    }
+    if ($name) { [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process') }
   }
 }
 '@
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\go-scanner; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go_scanner; Load-EnvFile .env; go run main.go"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\mt5_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\python-analyst; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python analyst.py"
-
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go-shield; Load-EnvFile ..\python-analyst\.env; go run main.go"
-
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\outcome_tracker; Load-EnvFile ..\python-analyst\.env; .\venv\Scripts\Activate.ps1; python tracker.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\news_scanner; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python scanner.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\python_analyst; .\venv\Scripts\Activate.ps1; python analyst.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go_shield; Load-EnvFile .env; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\outcome_tracker; .\venv\Scripts\Activate.ps1; python tracker.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\news_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\api_gateway; Load-EnvFile .env; go run main.go"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
+Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started (real money) — start manually." -ForegroundColor Yellow
+Write-Host "model_trainer is NOT auto-started — run it manually when you want to retrain." -ForegroundColor Yellow
 
-Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started" -ForegroundColor Yellow
-
-Write-Host "Launching dashboard..." -ForegroundColor Green
+cd C:\paybites
 npm run dev
+```
 
+## 5. Redis channel contracts
 
+**`market.ticks`**: `{symbol, price, rsi_14, volatility, macd_hist, timestamp}` — RSI/vol/MACD only change on candle close, not per raw trade.
 
+**`market.scores`**: every scored tick — `{symbol, price, score, rsi_14, momentum, band_position, volatility, macd_hist, components, threshold}`
 
+**`market.signals`**: only BUY-worthy — `{symbol, action, confidence, trigger_price, rsi_14, momentum, band_position, volatility, macd_hist}`
 
+**`trade.decisions`**: `{symbol, action, confidence, price, status, reason, timestamp}` — status is `approved`/`blocked`/`pending_approval`
 
+**`trade.execute`**: sent by go_shield (automated) or the dashboard's Approve button (manual) → execution_bridge
 
+**`market.news`**: `{headline, link, source, sentiment, symbols, timestamp}` — display only
 
-Prereqs: Memurai running as a Windows service (`Get-Service Memurai` should
-show `Running`), and a `.env` in `server/python-analyst/` (or wherever
-`load_dotenv()` can find it) with `DATABASE_URL` pointing at Neon.
+**Redis keys**: `config:trading_mode` (`copilot`/`automated`), `account:balance_usd` (written by `balance_sync`)
 
-## 5. Environment variables reference
+## 6. The balance-gate ordering gotcha (still true)
 
-| Variable | Used by | Purpose |
-|---|---|---|
-| `REDIS_ADDR` | go-scanner, go-shield | Redis host:port (default `localhost:6379`) |
-| `REDIS_URL` | Next.js API routes | Redis connection URL for ioredis |
-| `DATABASE_URL` | python-analyst | Neon Postgres connection string |
-| `DB_FLUSH_SECONDS` | python-analyst | How often buffered signals flush to Neon (default 15s) |
-| `STRATEGY_THRESHOLD` | python-analyst | Confidence score above which a BUY signal fires (default 75.0) |
-| `MAX_BALANCE_USD` | go-shield | Below this balance, strict confidence rules apply (default 10.00) |
-| `MIN_CONFIDENCE_LOW_BALANCE` | go-shield | Minimum confidence required when balance is at/below the ceiling (default 85.0) |
+```go
+if balance <= MAX_BALANCE_USD && confidence < MIN_CONFIDENCE_LOW_BALANCE {
+    → "blocked"  // fires FIRST, before mode is even checked
+}
+```
+At $0 balance, low-confidence signals never reach `pending_approval` regardless of Co-Pilot/Automated mode. This is the safety design working correctly, not a bug — fund accounts or raise confidence to see the Approve flow.
 
-## 6. Known gaps — things intentionally left as TODOs
+## 7. Data quality — hard lessons from real debugging
 
-Be aware of these before you assume the system is "done":
-
-1. **`account:balance_usd` is never set.** Nothing currently syncs your real
-   broker/wallet balance into Redis, so go-shield always sees balance = 0 and
-   applies the strict low-balance rule to every signal. You'll want a small
-   job (cron, or a goroutine in go-shield) that periodically fetches your
-   real balance from your broker's API and writes it to that key.
-2. **`placeBrokerOrder()` in go-shield/main.go is a stub.** It only logs
-   what it would do. No real order is ever placed until you wire in your
-   actual broker/exchange SDK there.
-3. **`scoring.py`'s `rule_based_score()` is a heuristic, not a trained
-   model.** It's explainable and real (RSI + momentum + volatility), but it
-   hasn't been backtested against actual outcomes yet. Treat every signal as
-   a hypothesis until you've checked the `signals` table in Neon against
-   what price actually did afterward.
-
-   
-4. **No authentication on the dashboard or API routes.** Anyone who can
-   reach `localhost:3000` (or wherever you deploy it) can flip
-   `config:trading_mode` to `automated`. Fine for local dev; add auth before
-   deploying anywhere reachable by others.
-
-## 7. Adding a feature — checklist
-
-Before writing code for a new feature, answer these:
-
-- **Which bot owns this?** Go bots (scanner, shield) are for anything
-  latency-sensitive or touching money/risk. Python (analyst) is for anything
-  analytical/statistical. The dashboard is presentation only — it should
-  never contain trading logic.
-- **Does it need a new Redis channel, or does it fit an existing one?**
-  Adding a field to an existing JSON payload is usually safer than inventing
-  a new channel — fewer places to keep in sync.
-- **Does it write to Neon?** If yes, batch it (see `db.py`'s pattern) —
-  don't add a new per-tick database write anywhere.
-- **Does it touch `placeBrokerOrder` or account balance?** If yes, that's
-  real-money code — test thoroughly in `copilot` mode first, and consider
-  adding a dry-run flag.
-
-### Example: adding a new indicator (e.g., MACD) to Bot 1
-
-1. Add the calculation to `rollingSeries` in `go-scanner/main.go` (follow
-   the `rsi14()` / `volatility()` pattern — same receiver, same lock usage).
-2. Add the field to `EnrichedTick` and to the JSON payload.
-3. Add the corresponding field to `Features` in `python-analyst/scoring.py`
-   and read it in `analyst.py` where the tick is unmarshaled.
-4. Decide its weight in `rule_based_score()` and document why, same as the
-   existing three components.
-5. Add the column to the Neon `signals` table DDL in `db.py` if you want it
-   logged for backtesting.
-
-### Example: adding a new dashboard panel
-
-1. New component goes in `app/components/ui/`.
-2. If it needs new real-time data, extend `useSignalStream.ts` — either add
-   a new SSE event type server-side (in `route.ts`) and a new
-   `es.addEventListener(...)` client-side, or derive it from data you
-   already have (`signals`/`decisions`).
-3. Import and place it in `page.tsx`.
+1. **RSI was computed on raw trade ticks, not time-based candles**, causing
+   it to saturate at 0 for ~50% of crypto rows (BTC/ETH's high tick rate hit
+   "all-one-direction in 14 raw prints" constantly). Fixed by rewriting
+   `go_scanner` to build real 1-minute candles and compute RSI-14 over the
+   last 14 candle closes. **Any training data from before this fix is
+   contaminated** — filter by `entry_time` after the fix's rollout hour,
+   confirmed via `WHERE macd_hist IS NOT NULL` transitioning cleanly (found
+   ours at `2026-09-16 18:00:00+00`).
+2. **`macd_hist` was computed but silently dropped before publishing** — it
+   was used inside `Features()` for scoring but never added to the three
+   outgoing payload dicts in `analyst.py`. Fixed; verify with the query in
+   §9 before trusting any MACD-based training data.
+3. **A single afternoon of data is not enough to train on.** A test run on
+   ~3.5 hours of clean post-fix data produced ROC AUC 0.18 (worse than
+   random) — the model learned a short-term market direction quirk, not a
+   durable pattern. Wait for data spanning multiple days and both up/down
+   conditions before retraining.
+4. **`trade_outcomes` is currently ~100% `near_miss` kind, near-zero real
+   `signal` kind.** A model trained on this pool mostly learns the
+   near-miss detector, not real trade-signal quality. Filter to
+   `kind = 'signal'` once enough real signals accumulate.
 
 ## 8. Before this ever touches real money
 
-1. Run in `copilot` mode only, for several days, manually reviewing every
-   `pending_approval` decision against what the market actually did next.
-2. Query the `signals` table in Neon and check real hit-rate: of the trades
-   the system would have taken, how many were actually profitable?
-3. Only then wire `placeBrokerOrder` to a real broker, and keep
-   `MAX_BALANCE_USD` / `MIN_CONFIDENCE_LOW_BALANCE` as a hard floor while you
-   keep gathering live data — don't remove the guardrail just because it's
-   working in copilot mode.
+1. Copilot mode only, manually reviewing every `pending_approval` against
+   what price actually did next.
+2. Check `trade_outcomes` for a real win rate across enough volume AND
+   varied market conditions — not one afternoon.
+3. Small real test trade first (`TRADE_USD_AMOUNT`/`TRADE_LOT_SIZE` small),
+   confirm the fill on the broker's own order history.
+4. Never remove `MAX_BALANCE_USD`/`MIN_CONFIDENCE_LOW_BALANCE` as a floor.
+5. Don't load `model_trainer`'s output into live scoring until its ROC AUC
+   is consistently, meaningfully above 0.5 across multiple retrains on
+   different time windows — one good run proves nothing on its own.
 
-## 9. Troubleshooting log
+## 9. Diagnostic queries worth keeping
 
-Keep adding to this as you hit things — future you will thank you.
+```sql
+-- Outcome distribution
+SELECT kind, outcome, COUNT(*) FROM trade_outcomes GROUP BY kind, outcome ORDER BY kind, outcome;
+
+-- Find exactly when a fix's data started flowing (works for any new column)
+SELECT date_trunc('hour', entry_time) AS hour,
+       COUNT(*) FILTER (WHERE macd_hist IS NOT NULL) AS non_null, COUNT(*) AS total
+FROM trade_outcomes GROUP BY hour ORDER BY hour;
+
+-- RSI sanity check (should be spread out, not piled at 0)
+SELECT rsi_14, COUNT(*) FROM trade_outcomes WHERE rsi_14 IS NOT NULL
+GROUP BY rsi_14 ORDER BY COUNT(*) DESC LIMIT 20;
+```
+
+## 10. Troubleshooting log
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Dashboard stuck on "reconnecting" | API route running on Edge runtime, which `ioredis` can't use | Add `export const runtime = "nodejs";` to `route.ts` files using ioredis |
-| Hydration warning mentioning `data-my-extension` | Browser extension injecting attributes into `<body>` before React loads | Add `suppressHydrationWarning` to `<body>` in `layout.tsx`; not a real bug |
-| PowerShell rejects `&&` | PowerShell doesn't support bash-style chaining | Use `;` instead, or run commands on separate lines |
-| `python analyst.py` → "No such file or directory" | Ran from wrong working directory | `cd` into `server/python-analyst` first |
-| Analytics charts show empty history even though Neon has rows | `server/api_gateway/.env` exists, but `go run main.go` does not load `.env` automatically | Start the gateway from a shell where `DATABASE_URL` is already exported, or load `server/api_gateway/.env` into the PowerShell process before `go run main.go` |
-| Confidence history stops updating while live scores still stream | `server/python-analyst/.env` exists, but `analyst.py` does not load `.env` automatically | Start the analyst from a shell where `DATABASE_URL` is already exported, or load `server/python-analyst/.env` before `python analyst.py` |
-| Latest signal confidence, signal feed, and risk shield stay empty | Bot 2 is publishing `market.scores`, but no score has crossed `STRATEGY_THRESHOLD`; Bot 3 only receives `market.signals` | Check live scores first. Empty signal/decision panels are expected when scores remain below the threshold |
-
-How would you actually know when to trade?
-
-Right now, "confidence" is just this rule-based math you've seen (RSI + momentum + band position). A single high number does not mean the trade will win — it means the current price pattern matches a hypothesis you coded in. The only way to actually know if that hypothesis holds up is the piece you already have but haven't accumulated data in yet: the outcomes panel.
-
-Here's the real workflow for "how do I know":
-
-Let signals fire and resolve for days/weeks (win/loss/timeout, tracked automatically).
-Look at the win rate by hour chart and trade outcomes panel — not the live score. If, say, signals above 75% confidence actually won 60% of the time historically, that's evidence. If they won 45% of the time, the scoring needs rework before you trust it with money.
-Right now both panels say "Nothing resolved yet" — meaning you genuinely don't have evidence either way yet. Any trade you place today is still a bet on an unproven hypothesis, not a validated edge.
+| Analytics history empty despite Neon having rows | Go doesn't auto-load `.env` | Use `run_all.ps1`'s Load-EnvFile, or add `godotenv.Load()` |
+| `bind: address already in use` on :8090 | Old `api_gateway` still running | `Get-NetTCPConnection -LocalPort 8090`, then `Stop-Process` on that PID |
+| Live panels empty, no signals firing | No score has crossed `STRATEGY_THRESHOLD` yet | Correct behavior — check the new Status Banner for the live gap |
+| Model ROC AUC below 0.5 | Training window too short / one-directional market | Need multi-day data across varied conditions, not one session |
+| `KeyError: 'created_at'` in model_trainer | Schema uses `entry_time`, not `created_at` | Use `entry_time` everywhere in the query and script |
+| Folder rename fails, "process cannot access" | A running process has that folder open | Ctrl+C it first |
+| `$env:X` sticks across unrelated runs | PowerShell session-scoped vars persist | Close and reopen the terminal |

@@ -51,6 +51,7 @@ func main() {
 	mux.HandleFunc("/mode", withCORS(handleMode))
 	mux.HandleFunc("/history", withCORS(handleHistory))
 	mux.HandleFunc("/approve", withCORS(handleApprove))
+	mux.HandleFunc("/status", withCORS(handleStatus))
 
 	port := getenv("GATEWAY_PORT", "8090")
 	log.Printf("API gateway listening on :%s", port)
@@ -287,4 +288,16 @@ func handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "dispatched"})
+}
+
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+	mode, _ := rdb.Get(r.Context(), "config:trading_mode").Result()
+	if mode == "" {
+		mode = "copilot"
+	}
+	threshold := os.Getenv("STRATEGY_THRESHOLD")
+	if threshold == "" {
+		threshold = "75.0"
+	}
+	json.NewEncoder(w).Encode(map[string]string{"mode": mode, "threshold": threshold})
 }
