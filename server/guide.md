@@ -89,10 +89,14 @@ Two ways to fix, pick one per service:
 - Or load the `.env` into the PowerShell process before `go run` — see the
   `run_all.ps1` below, which does this for every Go service automatically.
 
+
+
+
 ## 4. Running everything — `run_all.ps1` (project root)
 
-```powershell
+
 $ErrorActionPreference = "Stop"
+Write-Host "Starting paybites services..." -ForegroundColor Cyan
 
 $loadEnv = @'
 function Load-EnvFile([string]$Path) {
@@ -100,25 +104,34 @@ function Load-EnvFile([string]$Path) {
   Get-Content $Path | ForEach-Object {
     if ($_ -match '^\s*$' -or $_ -match '^\s*#') { return }
     $name, $value = $_ -split '=', 2
-    if ($name) { [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process') }
+    if ($name) {
+      [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+    }
   }
 }
 '@
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go_scanner; Load-EnvFile .env; go run main.go"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\go-scanner; go run main.go"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\mt5_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\python_analyst; .\venv\Scripts\Activate.ps1; python analyst.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go_shield; Load-EnvFile .env; go run main.go"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\outcome_tracker; .\venv\Scripts\Activate.ps1; python tracker.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\news_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\python-analyst; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python analyst.py"
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go-shield; Load-EnvFile ..\python-analyst\.env; go run main.go"
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\outcome_tracker; Load-EnvFile ..\python-analyst\.env; .\venv\Scripts\Activate.ps1; python tracker.py"
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\news_scanner; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python scanner.py"
+
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\api_gateway; Load-EnvFile .env; go run main.go"
 
-Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started (real money) — start manually." -ForegroundColor Yellow
-Write-Host "model_trainer is NOT auto-started — run it manually when you want to retrain." -ForegroundColor Yellow
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
 
-cd C:\paybites
+Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started" -ForegroundColor Yellow
+
+Write-Host "Launching dashboard..." -ForegroundColor Green
 npm run dev
-```
+
+
+
 
 ## 5. Redis channel contracts
 
@@ -168,6 +181,8 @@ At $0 balance, low-confidence signals never reach `pending_approval` regardless 
    `signal` kind.** A model trained on this pool mostly learns the
    near-miss detector, not real trade-signal quality. Filter to
    `kind = 'signal'` once enough real signals accumulate.
+
+   
 
 ## 8. Before this ever touches real money
 

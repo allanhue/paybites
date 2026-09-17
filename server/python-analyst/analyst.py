@@ -75,15 +75,22 @@ def main() -> None:
         action = "BUY" if score > STRATEGY_THRESHOLD else "HOLD"
 
         # Store every scored tick
-        db.queue_signal({
-            "symbol": symbol,
-            "price": price,
-            "rsi_14": rsi_14,
-            "volatility": volatility,
-            "momentum": mom,
-            "macd_hist": macd_hist,
-            "confidence": score,
-            "action": action,
+        # db.queue_signal({
+        #     "symbol": symbol,
+        #     "price": price,
+        #     "rsi_14": rsi_14,
+        #     "volatility": volatility,
+        #     "momentum": mom,
+        #     "macd_hist": macd_hist,
+        #     "confidence": score,
+        #     "action": action,
+        # })
+        if action == "BUY":
+            db.queue_signal({
+                "symbol": symbol, "price": price, "rsi_14": rsi_14,
+                "volatility": volatility, "momentum": mom,
+                "macd_hist": macd_hist,
+                "confidence": score, "action": action,
         })
 
         # Always publish the full scored tick for:

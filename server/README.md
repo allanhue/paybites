@@ -85,3 +85,7 @@ execution_bridge  →  Binance / MT5  (real orders)
    consistent, meaningfully-above-0.5 ROC AUC across multiple retrains on
    different time windows — see `server/guide.md` §7 for why an early run
    scored 0.18 (worse than random) and what that taught us.
+
+
+
+   
