@@ -114,22 +114,22 @@ function Load-EnvFile([string]$Path) {
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\go-scanner; go run main.go"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\mt5_scanner; .\venv\Scripts\Activate.ps1; python scanner.py"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\python-analyst; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python analyst.py"
-
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\go-shield; Load-EnvFile ..\python-analyst\.env; go run main.go"
-
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\outcome_tracker; Load-EnvFile ..\python-analyst\.env; .\venv\Scripts\Activate.ps1; python tracker.py"
-
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\news_scanner; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python scanner.py"
-
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\api_gateway; Load-EnvFile .env; go run main.go"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
-
-Write-Host "Core services launched. execution_bridge and balance_sync are NOT auto-started" -ForegroundColor Yellow
+Write-Host "Core services launched. execution_bridge, balance_sync, and model_trainer are NOT auto-started." -ForegroundColor Yellow
+Write-Host "Start execution_bridge/balance_sync manually when you intend to trade real money." -ForegroundColor Yellow
+Write-Host "Run model_trainer manually, on a delay (3 days to weekly) — not every session." -ForegroundColor Yellow
 
 Write-Host "Launching dashboard..." -ForegroundColor Green
+cd C:\paybites
 npm run dev
 
+
+<!-- train after few days : 3 days or weekly  -->
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
 
 
 
@@ -224,3 +224,12 @@ GROUP BY rsi_14 ORDER BY COUNT(*) DESC LIMIT 20;
 | `KeyError: 'created_at'` in model_trainer | Schema uses `entry_time`, not `created_at` | Use `entry_time` everywhere in the query and script |
 | Folder rename fails, "process cannot access" | A running process has that folder open | Ctrl+C it first |
 | `$env:X` sticks across unrelated runs | PowerShell session-scoped vars persist | Close and reopen the terminal |
+
+
+
+
+-- Run manually now to reclaim space immediately
+DELETE FROM trade_outcomes 
+WHERE kind = 'near_miss' 
+  AND resolved_at IS NOT NULL 
+  AND resolved_at < now() - interval '14 days';

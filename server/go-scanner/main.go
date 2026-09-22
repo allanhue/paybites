@@ -2,18 +2,12 @@
 //
 // Connects to a real public market data feed (Binance combined trade stream)
 // and builds fixed-interval candles (default 1 minute) per symbol from the
-// raw trade stream. RSI-14 and volatility are computed over the last 14
-// CLOSED CANDLES, not raw trade prints — this matches how RSI is meant to
-// work everywhere in finance. Computing RSI over 14 raw WebSocket trades
-// (the previous approach) meant the window could span anywhere from a few
-// hundred milliseconds to several seconds depending on trade frequency,
-// causing RSI to saturate at 0 or 100 constantly on busy symbols (BTC/ETH)
-// as an artifact of tick-count windowing, not genuine oversold/overbought
-// conditions. This version fixes that.
-//
-// Every individual trade still publishes an immediate price update to
-// "market.ticks" (so downstream services stay real-time on price), but the
-// rsi_14/volatility fields only change when a candle actually closes.
+// raw trade stream. RSI-14, volatility, and MACD are computed over CLOSED
+// CANDLES, not raw trade prints. A longer rolling window also feeds
+// trend_bias — price's position relative to a multi-hour moving average —
+// giving the analyst a regime signal the short-window indicators can't see
+// on their own (added after cross-validated training showed the model's
+// predictive direction flipping across days with different market trends).
 package main
 
 import (
@@ -34,7 +28,8 @@ import (
 var symbols = []string{"btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "dogeusdt"}
 
 const rsiPeriod = 14
-const candleWindowSize = 60 // how many closed candles to retain per symbol
+const candleWindowSize = 60  // short window for RSI/vol/MACD
+const longWindowSize = 240   // long window for trend_bias (240 x 1-min = 4 hours)
 
 type EnrichedTick struct {
 	Symbol     string  `json:"symbol"`
@@ -42,13 +37,14 @@ type EnrichedTick struct {
 	RSI14      float64 `json:"rsi_14"`
 	Volatility float64 `json:"volatility"`
 	MACDHist   float64 `json:"macd_hist"`
+	TrendBias  float64 `json:"trend_bias"`
 	Timestamp  int64   `json:"timestamp"`
 }
 
 // candleAggregator builds fixed-interval candles from raw trade prices and
-// keeps a rolling window of closed candle closes, from which RSI/volatility
-// are computed. RSI/volatility are cached and only recomputed when a candle
-// actually closes — not on every raw trade.
+// keeps rolling windows of closed candle closes, from which RSI/volatility/
+// MACD/trend_bias are computed. All are cached and only recomputed when a
+// candle actually closes — not on every raw trade.
 type candleAggregator struct {
 	mu          sync.Mutex
 	interval    time.Duration
@@ -59,22 +55,23 @@ type candleAggregator struct {
 	close       float64
 	hasCandle   bool
 	closes      []float64
+	longCloses  []float64
 
-	cachedRSI float64
-	cachedVol float64
+	cachedRSI  float64
+	cachedVol  float64
+	cachedTrend float64
 
-	// MACD state — EMAs updated only on candle close, same discipline as RSI/vol
 	ema12        float64
 	ema26        float64
 	macdSignal   float64
-	macdReady    bool // false until ema12/ema26 have seen enough candles to mean something
+	macdReady    bool
 	cachedMACD   float64
 	cachedSignal float64
 	cachedHist   float64
 }
 
 func newCandleAggregator(interval time.Duration) *candleAggregator {
-	return &candleAggregator{interval: interval, cachedRSI: 50.0, cachedVol: 0.0}
+	return &candleAggregator{interval: interval, cachedRSI: 50.0, cachedVol: 0.0, cachedTrend: 0.0}
 }
 
 // pushTrade updates the in-progress candle with a new trade price, closing
@@ -93,18 +90,21 @@ func (c *candleAggregator) pushTrade(price float64, ts time.Time) {
 	}
 
 	if bucketStart.After(c.candleStart) {
-		// Current candle is done — record its close, recompute indicators.
+		// Current candle is done — record its close ONCE, recompute indicators.
 		c.closes = append(c.closes, c.close)
 		if len(c.closes) > candleWindowSize {
 			c.closes = c.closes[len(c.closes)-candleWindowSize:]
 		}
-		 c.closes = append(c.closes, c.close)
-		if len(c.closes) > candleWindowSize {
-			c.closes = c.closes[len(c.closes)-candleWindowSize:]
+
+		c.longCloses = append(c.longCloses, c.close)
+		if len(c.longCloses) > longWindowSize {
+			c.longCloses = c.longCloses[len(c.longCloses)-longWindowSize:]
 		}
+
 		c.cachedRSI = computeRSI(c.closes)
 		c.cachedVol = computeVolatility(c.closes)
-		c.updateMACD(c.close) // NEW
+		c.cachedTrend = computeTrendBias(c.longCloses, c.close)
+		c.updateMACD(c.close)
 
 		// Start the new candle.
 		c.candleStart = bucketStart
@@ -123,13 +123,11 @@ func (c *candleAggregator) pushTrade(price float64, ts time.Time) {
 	}
 }
 
-func (c *candleAggregator) snapshot() (rsi, vol, macdHist float64) {
+func (c *candleAggregator) snapshot() (rsi, vol, macdHist, trendBias float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cachedRSI, c.cachedVol, c.cachedHist
-	
+	return c.cachedRSI, c.cachedVol, c.cachedHist, c.cachedTrend
 }
-
 
 func computeRSI(closes []float64) float64 {
 	if len(closes) < rsiPeriod+1 {
@@ -177,6 +175,54 @@ func computeVolatility(closes []float64) float64 {
 	}
 	variance /= float64(len(returns))
 	return math.Sqrt(variance)
+}
+
+// computeTrendBias returns price's position relative to its own longer-term
+// moving average: positive means price is above the long average (uptrend
+// bias), negative means below (downtrend bias). Needs at least 30 closed
+// candles before it returns anything other than neutral (0.0), since a
+// trend read off too little history is just noise.
+func computeTrendBias(longCloses []float64, currentPrice float64) float64 {
+	if len(longCloses) < 30 {
+		return 0.0
+	}
+	var sum float64
+	for _, v := range longCloses {
+		sum += v
+	}
+	longMA := sum / float64(len(longCloses))
+	if longMA == 0 {
+		return 0.0
+	}
+	return (currentPrice - longMA) / longMA
+}
+
+func (c *candleAggregator) updateMACD(closePrice float64) {
+	const k12 = 2.0 / (12.0 + 1.0)
+	const k26 = 2.0 / (26.0 + 1.0)
+	const k9 = 2.0 / (9.0 + 1.0)
+
+	if !c.macdReady {
+		c.ema12 = closePrice
+		c.ema26 = closePrice
+		c.macdSignal = 0
+		c.macdReady = true
+		return
+	}
+
+	c.ema12 = (closePrice * k12) + (c.ema12 * (1 - k12))
+	c.ema26 = (closePrice * k26) + (c.ema26 * (1 - k26))
+	macdLine := c.ema12 - c.ema26
+
+	if c.macdSignal == 0 {
+		c.macdSignal = macdLine
+	} else {
+		c.macdSignal = (macdLine * k9) + (c.macdSignal * (1 - k9))
+	}
+
+	c.cachedMACD = macdLine
+	c.cachedSignal = c.macdSignal
+	c.cachedHist = macdLine - c.macdSignal
 }
 
 type binanceTradeMsg struct {
@@ -264,7 +310,7 @@ func runOnce(ctx context.Context, wsURL string, rdb *redis.Client, aggregators m
 
 		now := time.Now()
 		agg.pushTrade(price, now)
-		rsi, vol, macdHist := agg.snapshot()
+		rsi, vol, macdHist, trendBias := agg.snapshot()
 
 		tick := EnrichedTick{
 			Symbol:     symKey,
@@ -272,6 +318,7 @@ func runOnce(ctx context.Context, wsURL string, rdb *redis.Client, aggregators m
 			RSI14:      rsi,
 			Volatility: vol,
 			MACDHist:   macdHist,
+			TrendBias:  trendBias,
 			Timestamp:  now.UnixMilli(),
 		}
 
@@ -318,33 +365,4 @@ func getenvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
-}
-
-
-func (c *candleAggregator) updateMACD(closePrice float64) {
-	const k12 = 2.0 / (12.0 + 1.0)
-	const k26 = 2.0 / (26.0 + 1.0)
-	const k9 = 2.0 / (9.0 + 1.0)
-
-	if !c.macdReady {
-		c.ema12 = closePrice
-		c.ema26 = closePrice
-		c.macdSignal = 0
-		c.macdReady = true
-		return
-	}
-
-	c.ema12 = (closePrice * k12) + (c.ema12 * (1 - k12))
-	c.ema26 = (closePrice * k26) + (c.ema26 * (1 - k26))
-	macdLine := c.ema12 - c.ema26
-
-	if c.macdSignal == 0 {
-		c.macdSignal = macdLine
-	} else {
-		c.macdSignal = (macdLine * k9) + (c.macdSignal * (1 - k9))
-	}
-
-	c.cachedMACD = macdLine
-	c.cachedSignal = c.macdSignal
-	c.cachedHist = macdLine - c.macdSignal
 }

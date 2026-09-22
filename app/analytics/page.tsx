@@ -12,16 +12,25 @@ export default function AnalyticsPage() {
   const { signals, outcomes, missed, news, connected } = useSignalStream();
   const symbol = signals[0]?.symbol || "BTCUSDT";
 
-  const [historicalOutcomes, setHistoricalOutcomes] = useState<TradeOutcome[]>([]);
+  const [historicalOutcomes, setHistoricalOutcomes] = useState<TradeOutcome[]>(
+    [],
+  );
   const [historicalMissed, setHistoricalMissed] = useState<TradeOutcome[]>([]);
 
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_URL}/history?symbol=${symbol}&limit=50`)
+    fetch(
+      `${process.env.NEXT_PUBLIC_API_URL}/history?symbol=${symbol}&limit=50`,
+    )
       .then((r) => r.json())
       .then((d) => {
         const rows = (d.outcomes || []).map((o: any) => ({
-          symbol: o.symbol, entry_price: o.entry_price, exit_price: o.exit_price,
-          confidence: o.confidence, outcome: o.outcome, pct_change: o.pct_change,
+          symbol: o.symbol,
+          kind: o.kind,
+          entry_price: o.entry_price,
+          exit_price: o.exit_price,
+          confidence: o.confidence,
+          outcome: o.outcome,
+          pct_change: o.pct_change,
           status: "resolved" as const,
         }));
         setHistoricalOutcomes(rows.filter((o: any) => o.kind !== "near_miss"));
@@ -39,8 +48,14 @@ export default function AnalyticsPage() {
           <BestHoursChart symbol={symbol} />
         </div>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <OutcomesPanel outcomes={[...outcomes, ...historicalOutcomes]} title="trade outcomes (real signals)" />
-          <OutcomesPanel outcomes={[...missed, ...historicalMissed]} title="missed opportunities (near-misses)" />
+          <OutcomesPanel
+            outcomes={[...outcomes, ...historicalOutcomes]}
+            title="trade outcomes (real signals)"
+          />
+          <OutcomesPanel
+            outcomes={[...missed, ...historicalMissed]}
+            title="missed opportunities (near-misses)"
+          />
         </div>
         <NewsFeed news={news} />
       </main>

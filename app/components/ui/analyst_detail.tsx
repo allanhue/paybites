@@ -9,10 +9,12 @@ export default function AnalystDetail({ latest }: { latest: ScoreTick | null }) 
     );
   }
   const bars: [string, number, string][] = [
-    ["RSI pressure", latest.components.rsi_component, "#35D0A0"],
-    ["Momentum", latest.components.momentum_component, "#6C8CFF"],
-    ["Band position", latest.components.band_component, "#E8A23D"],
-  ];
+  ["RSI pressure", latest.components.rsi_component, "#35D0A0"],
+  ["Momentum", latest.components.momentum_component, "#6C8CFF"],
+  ["Band position", latest.components.band_component, "#E8A23D"],
+  ["MACD confirm", latest.components.macd_component ?? 0, "#C084FC"],
+  ["Trend bias", latest.components.trend_component ?? 0, "#F472B6"],
+];
   return (
     <div className="border border-[#233042] bg-[#161F2B] p-4">
       <div className="flex items-center justify-between text-sm text-[#7C8B9C]">
@@ -34,6 +36,8 @@ export default function AnalystDetail({ latest }: { latest: ScoreTick | null }) 
         <span>Momentum {(latest.momentum * 100).toFixed(3)}%</span>
         <span>Band {latest.band_position.toFixed(2)}</span>
         <span>Vol {(latest.volatility * 100).toFixed(3)}%</span>
+        <span>MACD {latest.macd_hist?.toFixed(4) ?? "—"}</span>
+       <span>Trend {latest.trend_bias?.toFixed(4) ?? "—"}</span>
       </div>
     </div>
   );

@@ -1,10 +1,11 @@
 """
-Batch sync to Neon (Postgres).
+Batch sync to Aiven (Postgres).
 
 Matches the "avoid database bottlenecks" guardrail: we never write per-tick
-to Neon. Instead we buffer scored signals in memory and flush the whole
-batch every DB_FLUSH_SECONDS on a background thread. If Neon is briefly
-unreachable, the buffer just keeps growing until the next successful flush.
+to the database. Instead we buffer scored signals in memory and flush the
+whole batch every DB_FLUSH_SECONDS on a background thread. If the database
+is briefly unreachable, the buffer just keeps growing until the next
+successful flush.
 """
 
 import os
@@ -28,6 +29,8 @@ CREATE TABLE IF NOT EXISTS signals (
     rsi_14 DOUBLE PRECISION NOT NULL,
     volatility DOUBLE PRECISION NOT NULL,
     momentum DOUBLE PRECISION NOT NULL,
+    macd_hist DOUBLE PRECISION,
+    trend_bias DOUBLE PRECISION,
     confidence DOUBLE PRECISION NOT NULL,
     action TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -37,13 +40,15 @@ CREATE TABLE IF NOT EXISTS signals (
 
 def ensure_schema() -> None:
     if not DATABASE_URL:
-        print("[db] DATABASE_URL not set — Neon sync disabled, logging locally only")
+        print("[db] DATABASE_URL not set — sync disabled, logging locally only")
         return
     with psycopg.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
             cur.execute(DDL)
+            cur.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS macd_hist DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS trend_bias DOUBLE PRECISION;")
         conn.commit()
-    print("[db] Neon schema ready")
+    print("[db] Aiven schema ready")
 
 
 def queue_signal(record: dict[str, Any]) -> None:
@@ -66,14 +71,14 @@ def _flush() -> None:
                 cur.executemany(
                     """
                     INSERT INTO signals
-                        (symbol, price, rsi_14, volatility, momentum, confidence, action)
+                        (symbol, price, rsi_14, volatility, momentum, macd_hist, trend_bias, confidence, action)
                     VALUES (%(symbol)s, %(price)s, %(rsi_14)s, %(volatility)s,
-                            %(momentum)s, %(confidence)s, %(action)s)
+                            %(momentum)s, %(macd_hist)s, %(trend_bias)s, %(confidence)s, %(action)s)
                     """,
                     batch,
                 )
             conn.commit()
-        print(f"[db] flushed {len(batch)} signals to Neon")
+        print(f"[db] flushed {len(batch)} signals to Aiven")
     except Exception as e:  # noqa: BLE001 — batch sync should never crash the analyst
         print(f"[db] flush failed, re-queueing {len(batch)} records: {e}")
         with _lock:

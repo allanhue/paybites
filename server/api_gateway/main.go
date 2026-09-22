@@ -98,13 +98,26 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
 
+	rc := http.NewResponseController(w)
+
 	for {
 		select {
 		case msg := <-ch:
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", msg.Channel, msg.Payload)
+			// Give each write a hard deadline — a stalled/backgrounded tab
+			// will fail fast here instead of blocking this goroutine (and
+			// therefore blocking the Redis channel drain) for up to a minute.
+			rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", msg.Channel, msg.Payload); err != nil {
+				log.Printf("client write failed, closing stream: %v", err)
+				return
+			}
 			flusher.Flush()
 		case <-heartbeat.C:
-			fmt.Fprint(w, ": ping\n\n")
+			rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				log.Printf("client write failed on heartbeat, closing stream: %v", err)
+				return
+			}
 			flusher.Flush()
 		case <-r.Context().Done():
 			return
@@ -215,10 +228,11 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	outcomes := []outcomeRow{}
 	rows2, err := db.Query(
-		`SELECT symbol, kind, entry_price, exit_price, outcome, pct_change, confidence, entry_time
-		 FROM trade_outcomes WHERE symbol = $1 ORDER BY entry_time DESC LIMIT $2`,
-		symbol, limit,
-	)
+	`SELECT symbol, kind, entry_price, exit_price, outcome, pct_change, confidence, entry_time
+	 FROM trade_outcomes WHERE symbol = $1 AND outcome IN ('win','loss','timeout')
+	 ORDER BY entry_time DESC LIMIT $2`,
+	symbol, limit,
+)
 	if err == nil {
 		defer rows2.Close()
 		for rows2.Next() {

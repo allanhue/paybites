@@ -2,12 +2,7 @@
 Outcome Tracker
 
 Watches market.signals (real fired signals) and market.scores (near-misses),
-tracks each until it resolves into win/loss/timeout, and writes to Neon.
-
-Database writes are fully asynchronous: nothing in the Redis message loop
-ever blocks on a network call to Neon. Inserts/updates are queued in memory
-and flushed by a background thread every DB_FLUSH_SECONDS, exactly like
-python_analyst's db.py.
+tracks each until it resolves into win/loss/timeout, and writes to Aiven.
 """
 
 import json
@@ -48,6 +43,7 @@ CREATE TABLE IF NOT EXISTS trade_outcomes (
     band_position DOUBLE PRECISION,
     volatility DOUBLE PRECISION,
     macd_hist DOUBLE PRECISION,
+    trend_bias DOUBLE PRECISION,
     exit_price DOUBLE PRECISION,
     outcome TEXT,
     pct_change DOUBLE PRECISION,
@@ -73,12 +69,13 @@ def ensure_schema():
             cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS band_position DOUBLE PRECISION;")
             cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS volatility DOUBLE PRECISION;")
             cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS macd_hist DOUBLE PRECISION;")
+            cur.execute("ALTER TABLE trade_outcomes ADD COLUMN IF NOT EXISTS trend_bias DOUBLE PRECISION;")
             cur.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS trade_outcomes_client_id_idx "
                 "ON trade_outcomes(client_id);"
             )
         conn.commit()
-    print("[tracker] schema ready")
+    print("[tracker] schema ready (Aiven)")
 
 
 def queue_insert(row: dict):
@@ -109,9 +106,10 @@ def _flush():
                         """
                         INSERT INTO trade_outcomes
                             (client_id, kind, symbol, entry_price, confidence,
-                             rsi_14, momentum, band_position, volatility, macd_hist)
+                             rsi_14, momentum, band_position, volatility, macd_hist, trend_bias)
                         VALUES (%(client_id)s, %(kind)s, %(symbol)s, %(entry_price)s, %(confidence)s,
-                                %(rsi_14)s, %(momentum)s, %(band_position)s, %(volatility)s, %(macd_hist)s)
+                                %(rsi_14)s, %(momentum)s, %(band_position)s, %(volatility)s,
+                                %(macd_hist)s, %(trend_bias)s)
                         ON CONFLICT (client_id) DO NOTHING
                         """,
                         inserts,
@@ -143,6 +141,28 @@ def start_background_flush():
     threading.Thread(target=loop, daemon=True).start()
 
 
+def start_retention_cleanup():
+    def loop():
+        while True:
+            time.sleep(3600)
+            if not DATABASE_URL:
+                continue
+            try:
+                with psycopg.connect(DATABASE_URL) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM trade_outcomes WHERE kind = 'near_miss' "
+                            "AND resolved_at IS NOT NULL AND resolved_at < now() - interval '14 days'"
+                        )
+                        deleted = cur.rowcount
+                    conn.commit()
+                if deleted:
+                    print(f"[tracker] retention cleanup: removed {deleted} old near_miss rows")
+            except Exception as e:
+                print(f"[tracker] retention cleanup failed: {e}")
+    threading.Thread(target=loop, daemon=True).start()
+
+
 @dataclass
 class PendingCheck:
     client_id: str
@@ -169,7 +189,7 @@ def handle_signal(payload: dict, kind: str):
         "entry_price": price, "confidence": confidence,
         "rsi_14": payload.get("rsi_14"), "momentum": payload.get("momentum"),
         "band_position": payload.get("band_position"), "volatility": payload.get("volatility"),
-        "macd_hist": payload.get("macd_hist"),
+        "macd_hist": payload.get("macd_hist"), "trend_bias": payload.get("trend_bias"),
     })
 
     now = time.time()
@@ -220,6 +240,7 @@ def finalize(p: PendingCheck, exit_price: float, outcome: str, pct_change: float
 def main():
     ensure_schema()
     start_background_flush()
+    start_retention_cleanup()
 
     pubsub = r.pubsub()
     pubsub.subscribe("market.signals", "market.scores", "market.ticks")
@@ -246,6 +267,7 @@ def main():
                     "confidence": score, "rsi_14": payload["rsi_14"],
                     "momentum": payload["momentum"], "band_position": payload["band_position"],
                     "volatility": payload["volatility"], "macd_hist": payload.get("macd_hist"),
+                    "trend_bias": payload.get("trend_bias"),
                 }, kind="near_miss")
         elif channel == "market.ticks":
             check_pending_against_price(payload["symbol"], float(payload["price"]))
