@@ -29,7 +29,7 @@ var symbols = []string{"btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "d
 
 const rsiPeriod = 14
 const candleWindowSize = 60  // short window for RSI/vol/MACD
-const longWindowSize = 240   // long window for trend_bias (240 x 1-min = 4 hours)
+const longWindowSize = 45   // long window for trend_bias (240 x 1-min = 4 hours)
 
 type EnrichedTick struct {
 	Symbol     string  `json:"symbol"`
@@ -183,7 +183,7 @@ func computeVolatility(closes []float64) float64 {
 // candles before it returns anything other than neutral (0.0), since a
 // trend read off too little history is just noise.
 func computeTrendBias(longCloses []float64, currentPrice float64) float64 {
-	if len(longCloses) < 30 {
+	if len(longCloses) < 10 {
 		return 0.0
 	}
 	var sum float64
