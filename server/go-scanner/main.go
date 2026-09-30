@@ -6,8 +6,11 @@
 // CANDLES, not raw trade prints. A longer rolling window also feeds
 // trend_bias — price's position relative to a multi-hour moving average —
 // giving the analyst a regime signal the short-window indicators can't see
-// on their own (added after cross-validated training showed the model's
-// predictive direction flipping across days with different market trends).
+// on their own.
+//
+// v2: trend_bias is computed against the LIVE price on every tick (it used to
+// be frozen at the last candle close), the window is 2 hours, and it needs 30
+// closed candles before reporting anything other than 0.0.
 package main
 
 import (
@@ -28,8 +31,11 @@ import (
 var symbols = []string{"btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "dogeusdt"}
 
 const rsiPeriod = 14
-const candleWindowSize = 60  // short window for RSI/vol/MACD
-const longWindowSize = 45   // long window for trend_bias (240 x 1-min = 4 hours)
+const candleWindowSize = 60 // short window for RSI/vol/MACD
+const longWindowSize = 120  // long window for trend_bias (120 x 1-min = 2 hours)
+const minTrendCandles = 30  // no trend reading until this many closed candles exist
+const momentumLookback = 10 // momentum = live price vs the close 10 candles (10 min) ago
+const bandWindow = 20       // Bollinger-style band over the last 20 closed candles
 
 type EnrichedTick struct {
 	Symbol     string  `json:"symbol"`
@@ -38,13 +44,15 @@ type EnrichedTick struct {
 	Volatility float64 `json:"volatility"`
 	MACDHist   float64 `json:"macd_hist"`
 	TrendBias  float64 `json:"trend_bias"`
+	Momentum     float64 `json:"momentum"`
+	BandPosition float64 `json:"band_position"`
 	Timestamp  int64   `json:"timestamp"`
 }
 
 // candleAggregator builds fixed-interval candles from raw trade prices and
 // keeps rolling windows of closed candle closes, from which RSI/volatility/
-// MACD/trend_bias are computed. All are cached and only recomputed when a
-// candle actually closes — not on every raw trade.
+// MACD are computed (cached, recomputed only when a candle closes). trend_bias
+// is derived from the long window plus the live price at snapshot time.
 type candleAggregator struct {
 	mu          sync.Mutex
 	interval    time.Duration
@@ -57,9 +65,8 @@ type candleAggregator struct {
 	closes      []float64
 	longCloses  []float64
 
-	cachedRSI  float64
-	cachedVol  float64
-	cachedTrend float64
+	cachedRSI float64
+	cachedVol float64
 
 	ema12        float64
 	ema26        float64
@@ -71,7 +78,7 @@ type candleAggregator struct {
 }
 
 func newCandleAggregator(interval time.Duration) *candleAggregator {
-	return &candleAggregator{interval: interval, cachedRSI: 50.0, cachedVol: 0.0, cachedTrend: 0.0}
+	return &candleAggregator{interval: interval, cachedRSI: 50.0, cachedVol: 0.0}
 }
 
 // pushTrade updates the in-progress candle with a new trade price, closing
@@ -103,7 +110,6 @@ func (c *candleAggregator) pushTrade(price float64, ts time.Time) {
 
 		c.cachedRSI = computeRSI(c.closes)
 		c.cachedVol = computeVolatility(c.closes)
-		c.cachedTrend = computeTrendBias(c.longCloses, c.close)
 		c.updateMACD(c.close)
 
 		// Start the new candle.
@@ -123,10 +129,62 @@ func (c *candleAggregator) pushTrade(price float64, ts time.Time) {
 	}
 }
 
-func (c *candleAggregator) snapshot() (rsi, vol, macdHist, trendBias float64) {
+type snapshotData struct {
+	RSI, Vol, MACDHist, TrendBias, Momentum, BandPos float64
+}
+
+// snapshot returns the cached indicators plus trend_bias, momentum and band
+// position measured against the live price passed in. Momentum and band
+// position are built from CLOSED CANDLES (the old analyst versions used the
+// last 10/20 raw trade prints, i.e. a fraction of a second on busy symbols).
+func (c *candleAggregator) snapshot(price float64) snapshotData {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cachedRSI, c.cachedVol, c.cachedHist, c.cachedTrend
+	return snapshotData{
+		RSI:       c.cachedRSI,
+		Vol:       c.cachedVol,
+		MACDHist:  c.cachedHist,
+		TrendBias: computeTrendBias(c.longCloses, price),
+		Momentum:  computeCandleMomentum(c.closes, price),
+		BandPos:   computeBandPosition(c.closes, price),
+	}
+}
+
+// computeCandleMomentum: fractional change of the live price vs the close
+// momentumLookback candles ago. 0.0 until enough candles exist.
+func computeCandleMomentum(closes []float64, price float64) float64 {
+	if len(closes) < momentumLookback {
+		return 0.0
+	}
+	base := closes[len(closes)-momentumLookback]
+	if base == 0 {
+		return 0.0
+	}
+	return (price - base) / base
+}
+
+// computeBandPosition: where the live price sits inside a 2-sigma band of the
+// last bandWindow closes. -1 = lower band, 0 = mean, +1 = upper band, clipped
+// to [-1.5, 1.5]. Same formula the analyst used, now on candles.
+func computeBandPosition(closes []float64, price float64) float64 {
+	if len(closes) < bandWindow {
+		return 0.0
+	}
+	w := closes[len(closes)-bandWindow:]
+	var sum float64
+	for _, v := range w {
+		sum += v
+	}
+	mean := sum / float64(len(w))
+	var variance float64
+	for _, v := range w {
+		variance += (v - mean) * (v - mean)
+	}
+	sd := math.Sqrt(variance / float64(len(w)))
+	if sd < 1e-12 {
+		return 0.0
+	}
+	return math.Max(-1.5, math.Min(1.5, (price-mean)/(2*sd)))
 }
 
 func computeRSI(closes []float64) float64 {
@@ -179,11 +237,11 @@ func computeVolatility(closes []float64) float64 {
 
 // computeTrendBias returns price's position relative to its own longer-term
 // moving average: positive means price is above the long average (uptrend
-// bias), negative means below (downtrend bias). Needs at least 30 closed
-// candles before it returns anything other than neutral (0.0), since a
-// trend read off too little history is just noise.
+// bias), negative means below (downtrend bias). Returns exactly 0.0 until
+// minTrendCandles closed candles exist, since a trend read off too little
+// history is just noise. (The trainer drops rows where trend_bias == 0.0.)
 func computeTrendBias(longCloses []float64, currentPrice float64) float64 {
-	if len(longCloses) < 10 {
+	if len(longCloses) < minTrendCandles {
 		return 0.0
 	}
 	var sum float64
@@ -310,16 +368,18 @@ func runOnce(ctx context.Context, wsURL string, rdb *redis.Client, aggregators m
 
 		now := time.Now()
 		agg.pushTrade(price, now)
-		rsi, vol, macdHist, trendBias := agg.snapshot()
+		s := agg.snapshot(price)
 
 		tick := EnrichedTick{
-			Symbol:     symKey,
-			Price:      price,
-			RSI14:      rsi,
-			Volatility: vol,
-			MACDHist:   macdHist,
-			TrendBias:  trendBias,
-			Timestamp:  now.UnixMilli(),
+			Symbol:       symKey,
+			Price:        price,
+			RSI14:        s.RSI,
+			Volatility:   s.Vol,
+			MACDHist:     s.MACDHist,
+			TrendBias:    s.TrendBias,
+			Momentum:     s.Momentum,
+			BandPosition: s.BandPos,
+			Timestamp:    now.UnixMilli(),
 		}
 
 		payload, _ := json.Marshal(tick)

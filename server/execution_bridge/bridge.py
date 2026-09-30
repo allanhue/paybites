@@ -4,6 +4,15 @@ Execution Bridge
 go-shield publishes trades that already passed risk checks to "trade.execute".
 This service is the only place that actually calls a broker with real money.
 It routes by symbol shape: *USDT/*BUSD -> Binance, 6-letter currency pairs -> MT5.
+
+v2 fixes
+  - Reads `trigger_price` (what go-shield / the Approve button actually send).
+    Before, price defaulted to 0 and every Binance order died with ZeroDivisionError.
+  - Falls back to the live Binance ticker if no usable price arrives.
+  - Per-symbol lock so one signal burst cannot open several positions.
+
+STILL MISSING (do not use automated mode until added): this bridge only BUYs.
+Nothing sells, so there is no stop-loss / take-profit / time exit.
 """
 
 import json
@@ -31,6 +40,8 @@ MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
 TRADE_LOT_SIZE = float(os.getenv("TRADE_LOT_SIZE", "0.01"))
 
+LOCK_SECONDS = int(os.getenv("POSITION_LOCK_SECONDS", "900"))
+
 binance_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, testnet=BINANCE_TESTNET)
 mt5_ready = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
 if not mt5_ready:
@@ -53,6 +64,9 @@ def execute_binance(symbol: str, price: float) -> dict:
         if f["filterType"] == "LOT_SIZE":
             step_size = float(f["stepSize"])
             break
+
+    if price <= 0:
+        price = float(binance_client.get_symbol_ticker(symbol=symbol)["price"])
 
     raw_qty = TRADE_USD_AMOUNT / price
     qty = round_step_size(raw_qty, step_size)
@@ -104,7 +118,12 @@ def main():
             continue
 
         symbol = trade["symbol"]
-        price = float(trade.get("price", 0))
+        price = float(trade.get("trigger_price") or trade.get("price") or 0)
+
+        lock_key = f"exec:lock:{symbol}"
+        if not r.set(lock_key, "1", nx=True, ex=LOCK_SECONDS):
+            print(f"[bridge] {symbol}: skipped, position lock active")
+            continue
 
         try:
             if is_crypto(symbol):
@@ -113,6 +132,9 @@ def main():
                 result = execute_mt5(symbol)
         except Exception as e:
             result = {"status": "failed", "reason": str(e)}
+
+        if result.get("status") != "filled":
+            r.delete(lock_key)  # a failed order should not block a retry
 
         result["symbol"] = symbol
         print(f"[bridge] {symbol}: {result}")

@@ -132,6 +132,16 @@ npm run dev
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
 
 
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python diagnostics.py --live"
+                                                                                                               
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python diagnostics.py "
+
+
+
+
+
+
+
 
 ## 5. Redis channel contracts
 

@@ -33,8 +33,9 @@ export default function AnalyticsPage() {
           pct_change: o.pct_change,
           status: "resolved" as const,
         }));
-        setHistoricalOutcomes(rows.filter((o: any) => o.kind !== "near_miss"));
-        setHistoricalMissed(rows.filter((o: any) => o.kind === "near_miss"));
+        // Real fired signals only. near_miss and gated rows are shadow tracking.
+        setHistoricalOutcomes(rows.filter((o: any) => o.kind === "signal"));
+        setHistoricalMissed(rows.filter((o: any) => o.kind !== "signal"));
       })
       .catch(() => {});
   }, [symbol]);
@@ -54,7 +55,7 @@ export default function AnalyticsPage() {
           />
           <OutcomesPanel
             outcomes={[...missed, ...historicalMissed]}
-            title="missed opportunities (near-misses)"
+            title="missed opportunities (near-misses and gated)"
           />
         </div>
         <NewsFeed news={news} />

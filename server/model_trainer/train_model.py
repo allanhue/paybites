@@ -1,177 +1,258 @@
 """
-Train an explainable logistic regression model on historical trade outcomes.
-Reads from Aiven (DATABASE_URL in .env should point there, not Neon).
+Trainer v2 - explainable logistic regression, judged honestly.
 
-Uses TimeSeriesSplit (5 sequential folds) instead of one split, and prints
-a daily win-rate regime check up front, since a single split or a pooled
-average can hide real drift across days.
+What changed vs v1
+  1. Contaminated feature rows are dropped. Before the scanner rollout the
+     analyst wrote macd_hist / trend_bias as 0.0 (not NULL), so `IS NOT NULL`
+     did not isolate real data. Rows where these are exactly 0.0 are removed
+     (NONZERO_FEATURES) and the count is printed so you can see the damage.
+  2. Thinning. Near-miss rows were logged per tick, so 100k rows are a few
+     hundred independent situations. We keep one row per symbol per
+     THIN_MINUTES bucket. The row count after thinning is your real sample size.
+  3. Purged walk-forward by day: train only on rows that entered at least
+     EMBARGO_MINUTES before the test day starts (labels take up to the hold
+     time to resolve, so anything closer leaks the future into training).
+  4. Days with fewer than MIN_CLASS wins or losses are reported but NOT scored.
+     (2026-09-30 had ~12 wins: its AUC of 0.87 was noise, not skill.)
+  5. Fee-aware. Prints the break-even win rate and the mean NET return of the
+     model's top-ranked picks, not just AUC.
+  6. Optional gradient-boosting comparison (COMPARE_GBM=1). If it doesn't beat
+     logistic regression out-of-sample, stay with the explainable model.
+  7. `trustworthy` now needs enough valid days, mean AUC, day-consistency and
+     top-decile lift, not one number.
+
+Env knobs: TRAIN_KINDS, THIN_MINUTES, EMBARGO_MINUTES, MIN_TRAIN_DAYS, MIN_CLASS,
+ROUND_TRIP_FEE_PCT, NONZERO_FEATURES, TREND_BIAS_CUTOFF, COMPARE_GBM, MODEL_OUT.
 """
 
 import os
 
 import joblib
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, average_precision_score
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
+from sqlalchemy import create_engine, text
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 MODEL_OUT = os.getenv("MODEL_OUT", "cloude.pkl")
 FEATURES = ["rsi_14", "momentum", "band_position", "volatility", "macd_hist", "trend_bias"]
+NONZERO_FEATURES = [f for f in os.getenv("NONZERO_FEATURES", "macd_hist,trend_bias").split(",") if f]
+TRAIN_KINDS = [k for k in os.getenv("TRAIN_KINDS", "near_miss,signal").split(",") if k]
+# Only train on rows entered at/after this timestamp. Set it to the moment the scanner
+# started sending candle-based momentum/band_position (older rows used a different
+# definition of those two features and must not be mixed in).
+TREND_BIAS_CUTOFF = os.getenv("TRAIN_CUTOFF") or os.getenv("TREND_BIAS_CUTOFF", "")
 
-# Set this once you've confirmed (via the hourly IS NOT NULL query) exactly
-# when trend_bias started flowing cleanly — same technique used for macd_hist.
-TREND_BIAS_CUTOFF = os.getenv("TREND_BIAS_CUTOFF", "")
+THIN_MINUTES = int(os.getenv("THIN_MINUTES", "5"))
+EMBARGO_MINUTES = int(os.getenv("EMBARGO_MINUTES", "30"))
+MIN_TRAIN_DAYS = int(os.getenv("MIN_TRAIN_DAYS", "2"))
+MIN_CLASS = int(os.getenv("MIN_CLASS", "30"))
+FEE = float(os.getenv("ROUND_TRIP_FEE_PCT", "0.20")) / 100
+COMPARE_GBM = os.getenv("COMPARE_GBM", "1") == "1"
 
 
 def load_data() -> pd.DataFrame:
-    db_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    print(f"[trainer] connecting to: {db_url.split('@')[-1]}")
+    url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+    print(f"[trainer] connecting to: {url.split('@')[-1]}")
 
-    cutoff_clause = f"AND entry_time >= '{TREND_BIAS_CUTOFF}'" if TREND_BIAS_CUTOFF else ""
+    q = "SELECT * FROM trade_outcomes WHERE outcome IN ('win','loss') AND kind = ANY(:kinds)"
+    params: dict = {"kinds": TRAIN_KINDS}
+    if TREND_BIAS_CUTOFF:
+        q += " AND entry_time >= :cutoff"
+        params["cutoff"] = TREND_BIAS_CUTOFF
+    q += " ORDER BY entry_time ASC"
 
-    query = f"""
-        SELECT rsi_14, momentum, band_position, volatility, macd_hist, trend_bias,
-               confidence, outcome, kind, entry_time
-        FROM trade_outcomes
-        WHERE outcome IN ('win', 'loss')
-          {cutoff_clause}
-          AND rsi_14 IS NOT NULL AND momentum IS NOT NULL
-          AND band_position IS NOT NULL AND volatility IS NOT NULL
-          AND macd_hist IS NOT NULL AND trend_bias IS NOT NULL
-        ORDER BY entry_time ASC
-    """
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        return pd.read_sql(query, conn)
+    with create_engine(url).connect() as conn:
+        return pd.read_sql(text(q), conn, params=params)
 
 
-def print_daily_regime_check(df: pd.DataFrame):
-    print("\n==============================")
-    print("DAILY WIN-RATE (regime check)")
-    print("==============================")
-    daily = (
-        df.assign(day=df["entry_time"].dt.date)
-        .groupby("day")["outcome"]
-        .apply(lambda s: (s == "win").mean() * 100)
-        .round(1)
-    )
-    print(daily)
-    spread = daily.max() - daily.min()
-    if spread > 15:
-        print(
-            f"\nWARNING: win rate swings {spread:.1f} points across days. "
-            "trend_bias is meant to address exactly this — check whether its "
-            "coefficient below is meaningfully non-zero, and whether the "
-            "fold-to-fold AUC spread has narrowed compared to previous runs."
-        )
-
-
-def main():
-    df = load_data()
-    print(f"Loaded {len(df)} resolved rows (win/loss only, timeouts excluded).")
-    print("\nOutcome distribution:")
-    print(df["outcome"].value_counts())
-    print("\nTrade kind distribution:")
-    print(df["kind"].value_counts())
-
-    if len(df) < 100:
-        print("\nERROR: not enough data to train safely.")
-        return
-
-    print_daily_regime_check(df)
-    # addded evaluation for day by daya 
-    day_aucs = evaluate_by_day(df)
-
-    X = df[FEATURES].values
-    y = (df["outcome"] == "win").astype(int).values
-
-    print("\n==============================")
-    print("TIME-SERIES CROSS-VALIDATION (5 sequential folds)")
-    print("==============================")
-    tscv = TimeSeriesSplit(n_splits=5)
-    aucs = []
-
-    
-
-    for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X[train_idx])
-        X_test_scaled = scaler.transform(X[test_idx])
-
-        model = LogisticRegression(class_weight="balanced", max_iter=2000, random_state=42)
-        model.fit(X_train_scaled, y[train_idx])
-        proba = model.predict_proba(X_test_scaled)[:, 1]
-
-        auc = roc_auc_score(y[test_idx], proba)
-        pr = average_precision_score(y[test_idx], proba)
-        aucs.append(auc)
-
-        fold_start = df["entry_time"].iloc[test_idx[0]]
-        fold_end = df["entry_time"].iloc[test_idx[-1]]
-        print(f"Fold {fold + 1}: AUC={auc:.4f}  PR-AUC={pr:.4f}  "
-              f"(train n={len(train_idx)}, test n={len(test_idx)}, {fold_start} → {fold_end})")
-
-    mean_auc = sum(aucs) / len(aucs)
-    print(f"\nMean AUC across folds: {mean_auc:.4f}")
-    print(f"AUC range across folds: {min(aucs):.4f} to {max(aucs):.4f}")
-
-    if mean_auc < 0.55:
-        print(
-            "\nVERDICT: mean AUC is not meaningfully above chance yet. Compare this fold-spread "
-            "against the pre-trend_bias run — if the spread narrowed, trend_bias helped even if "
-            "not enough on its own yet. If the spread is just as wide, regime drift needs a "
-            "different fix (e.g. retraining on a rolling window instead of pooling all history)."
-        )
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    final_model = LogisticRegression(class_weight="balanced", max_iter=2000, random_state=42)
-    final_model.fit(X_scaled, y)
-
-    print("\n==============================")
-    print("FEATURE COEFFICIENTS (full-data fit, for inspection only)")
-    print("==============================")
-    for feature, coef in zip(FEATURES, final_model.coef_[0]):
-        direction = "increases" if coef > 0 else "decreases"
-        print(f"{feature:20s} {coef:+.4f} ({direction} win probability)")
-
-    artifact = {
-        "model": final_model, "scaler": scaler, "features": FEATURES,
-        "rows_used": len(df), "cv_mean_auc": mean_auc, "cv_fold_aucs": aucs,
-        "trustworthy": len(day_aucs) >= 3 and min(day_aucs) > 0.5 and sum(day_aucs) / len(day_aucs) >= 0.55,
-        "period": {"start": str(df["entry_time"].min()), "end": str(df["entry_time"].max())},
-    }
-    joblib.dump(artifact, MODEL_OUT)
-    print(f"\nSaved model to: {MODEL_OUT} (trustworthy={artifact['trustworthy']})")
-
-
-def evaluate_by_day(df):
+def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True)
+    print(f"Loaded {len(df)} resolved rows (kinds={TRAIN_KINDS}).")
+
+    n0 = len(df)
+    df = df.dropna(subset=FEATURES + ["pct_change"])
+    print(f"Dropped {n0 - len(df)} rows with NULL features.")
+
+    for f in NONZERO_FEATURES:
+        if f in FEATURES:
+            n1 = len(df)
+            df = df[df[f] != 0.0]
+            print(f"Dropped {n1 - len(df)} rows where {f} == 0.0 (pre-rollout defaults / warm-up).")
+
+    df["y"] = (df["outcome"] == "win").astype(int)
+    df["net"] = df["pct_change"] - FEE
+    df = df.sort_values("entry_time").reset_index(drop=True)
+
+    if THIN_MINUTES > 0:
+        n2 = len(df)
+        bucket = df["entry_time"].dt.floor(f"{THIN_MINUTES}min")
+        df = (
+            df.assign(_b=bucket)
+            .drop_duplicates(["symbol", "_b"], keep="first")
+            .drop(columns="_b")
+            .sort_values("entry_time")
+            .reset_index(drop=True)
+        )
+        print(f"Thinned {n2} -> {len(df)} rows (1 per symbol per {THIN_MINUTES} min). "
+              f"THIS is your effective sample size.")
+
     df["day"] = df["entry_time"].dt.date
+    return df
+
+
+def print_regime(df: pd.DataFrame) -> None:
+    print("\n==============================")
+    print("DAILY WIN-RATE (after cleaning + thinning)")
+    print("==============================")
+    g = df.groupby("day")["y"].agg(rows="count", wins="sum", win_rate=lambda s: round(s.mean() * 100, 1))
+    print(g.to_string())
+    spread = g["win_rate"].max() - g["win_rate"].min()
+    if spread > 15:
+        print(f"\nWARNING: win rate swings {spread:.1f} points across days - regime drift dominates. "
+              "Judge the model by per-day results below, not by pooled numbers.")
+
+    b = float(df["barrier_pct"].median()) if "barrier_pct" in df and df["barrier_pct"].notna().any() else 0.003
+    be = (b + FEE) / (2 * b)
+    print(f"\nBREAK-EVEN: with symmetric barriers of {b*100:.2f}% and {FEE*100:.2f}% round-trip fees, "
+          f"a strategy needs a {be*100:.1f}% win rate just to break even (timeouts ignored).")
+
+
+def make_model(kind: str):
+    if kind == "gbm":
+        return HistGradientBoostingClassifier(
+            max_depth=3, learning_rate=0.05, max_iter=150,
+            class_weight="balanced", random_state=42,
+        )
+    return LogisticRegression(class_weight="balanced", max_iter=2000, random_state=42)
+
+
+def walk_forward(df: pd.DataFrame, kind: str):
     days = sorted(df["day"].unique())
-    aucs = []
-    print("\nEXPANDING-WINDOW EVALUATION (train on prior days, test on next day)")
-    for i in range(2, len(days)):
-        train = df[df["day"].isin(days[:i])]
-        test = df[df["day"] == days[i]]
-        yte = (test["outcome"] == "win").astype(int).values
-        if len(set(yte)) < 2:
+    rows, oos_frames = [], []
+    for i in range(MIN_TRAIN_DAYS, len(days)):
+        day = days[i]
+        test = df[df["day"] == day]
+        cutoff = test["entry_time"].min() - pd.Timedelta(minutes=EMBARGO_MINUTES)
+        train = df[df["entry_time"] < cutoff]
+        if len(train) < 200 or train["y"].nunique() < 2 or len(test) == 0:
             continue
-        ytr = (train["outcome"] == "win").astype(int).values
+
         scaler = StandardScaler()
         Xtr = scaler.fit_transform(train[FEATURES].values)
         Xte = scaler.transform(test[FEATURES].values)
-        m = LogisticRegression(class_weight="balanced", max_iter=2000, random_state=42).fit(Xtr, ytr)
-        auc = roc_auc_score(yte, m.predict_proba(Xte)[:, 1])
-        aucs.append(auc)
-        print(f"  {days[i]}: AUC={auc:.4f}  base_win_rate={yte.mean():.3f}  n={len(test)}")
-    return aucs
+        model = make_model(kind).fit(Xtr, train["y"].values)
+        p = model.predict_proba(Xte)[:, 1]
+
+        yte = test["y"].values
+        pos, neg = int(yte.sum()), int(len(yte) - yte.sum())
+        valid = pos >= MIN_CLASS and neg >= MIN_CLASS
+        auc = float(roc_auc_score(yte, p)) if valid else None
+
+        k = max(1, int(len(p) * 0.10))
+        top = np.argsort(-p)[:k]
+        rows.append({
+            "day": day, "n": len(test), "wins": pos, "base_wr": round(yte.mean() * 100, 1),
+            "auc": None if auc is None else round(auc, 4),
+            "top10_wr": round(yte[top].mean() * 100, 1),
+            "top10_net_pct": round(test["net"].values[top].mean() * 100, 3),
+            "scored": valid,
+        })
+        oos_frames.append(pd.DataFrame({"p": p, "y": yte, "net": test["net"].values}))
+
+    oos = pd.concat(oos_frames, ignore_index=True) if oos_frames else pd.DataFrame(columns=["p", "y", "net"])
+    return rows, oos
+
+
+def summarize(name: str, rows: list[dict]) -> dict:
+    print(f"\n--- {name}: purged walk-forward (embargo {EMBARGO_MINUTES} min) ---")
+    if not rows:
+        print("No testable days yet.")
+        return {"valid_days": 0, "mean_auc": None, "frac_above_half": 0.0, "lift_days": 0.0}
+    print(pd.DataFrame(rows).to_string(index=False))
+    scored = [r for r in rows if r["scored"]]
+    aucs = [r["auc"] for r in scored]
+    lift = [r["top10_wr"] > r["base_wr"] for r in scored]
+    s = {
+        "valid_days": len(scored),
+        "mean_auc": float(np.mean(aucs)) if aucs else None,
+        "frac_above_half": float(np.mean([a > 0.5 for a in aucs])) if aucs else 0.0,
+        "lift_days": float(np.mean(lift)) if lift else 0.0,
+    }
+    ma = "n/a" if s["mean_auc"] is None else f"{s['mean_auc']:.4f}"
+    print(f"Scored days: {s['valid_days']}  mean AUC: {ma}  "
+          f"days AUC>0.5: {s['frac_above_half']*100:.0f}%  days top-10% beats base rate: {s['lift_days']*100:.0f}%")
+    return s
+
+
+def print_threshold_table(oos: pd.DataFrame) -> None:
+    if len(oos) < 100:
+        return
+    print("\nOUT-OF-SAMPLE PICKS BY MODEL RANK (pooled, fees included)")
+    for q in (0.50, 0.75, 0.90, 0.95):
+        sel = oos[oos["p"] >= oos["p"].quantile(q)]
+        print(f"  top {int(round((1 - q) * 100)):>3d}%  n={len(sel):>6d}  "
+              f"win_rate={sel['y'].mean() * 100:5.1f}%  mean_net={sel['net'].mean() * 100:+.3f}%")
+
+
+def main():
+    df = prepare(load_data())
+    if len(df) < 500:
+        print("\nERROR: not enough clean, thinned rows to evaluate. Keep collecting (or lower THIN_MINUTES).")
+        return
+
+    print("\nOutcome distribution:\n", df["outcome"].value_counts().to_string())
+    print("\nSymbols:\n", df["symbol"].value_counts().to_string())
+    print_regime(df)
+
+    lr_rows, lr_oos = walk_forward(df, "logreg")
+    lr = summarize("LOGISTIC REGRESSION", lr_rows)
+    print_threshold_table(lr_oos)
+
+    if COMPARE_GBM:
+        gb_rows, _ = walk_forward(df, "gbm")
+        summarize("GRADIENT BOOSTING (comparison only)", gb_rows)
+
+    trustworthy = bool(
+        lr["valid_days"] >= 5
+        and lr["mean_auc"] is not None and lr["mean_auc"] >= 0.55
+        and lr["frac_above_half"] >= 0.70
+        and lr["lift_days"] >= 0.60
+    )
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(df[FEATURES].values)
+    final = make_model("logreg").fit(X, df["y"].values)
+
+    print("\n==============================")
+    print("FEATURE COEFFICIENTS (standardized, full-data fit, inspection only)")
+    print("==============================")
+    for f, c in zip(FEATURES, final.coef_[0]):
+        print(f"{f:16s} {c:+.4f} ({'raises' if c > 0 else 'lowers'} win probability)")
+
+    artifact = {
+        "model": final, "scaler": scaler, "features": FEATURES,
+        "rows_used": len(df), "walk_forward": lr_rows, "summary": lr,
+        "config": {"thin_minutes": THIN_MINUTES, "embargo_minutes": EMBARGO_MINUTES,
+                   "fee": FEE, "kinds": TRAIN_KINDS, "nonzero": NONZERO_FEATURES},
+        "trustworthy": trustworthy,
+        "period": {"start": str(df["entry_time"].min()), "end": str(df["entry_time"].max())},
+    }
+    joblib.dump(artifact, MODEL_OUT)
+    print(f"\nSaved model to: {MODEL_OUT} (trustworthy={trustworthy})")
+    if not trustworthy:
+        print("Not trustworthy yet: needs >=5 scored days, mean AUC >=0.55, AUC>0.5 on >=70% of days, "
+              "and top-10% picks beating the base rate on >=60% of days.")
+
 
 if __name__ == "__main__":
     main()

@@ -6,6 +6,7 @@ import SignalFeed from "@/app/components/ui/signal_feed";
 import RiskPanel from "@/app/components/ui/risk_panel";
 import AnalystDetail from "@/app/components/ui/analyst_detail";
 import Opportunities from "@/app/components/ui/opportunities";
+import MonitorPanel from "@/app/components/ui/monitor_panel";
 import { useSignalStream } from "@/app/lib/use_signal_stream";
 import StatusBanner from "@/app/components/ui/status_banner";
 
@@ -18,6 +19,7 @@ export default function LiveOpsPage() {
       <Navbar connected={connected} />
       <main className="mx-auto max-w-6xl space-y-6 p-6">
         <StatusBanner scores={scores} />
+        <MonitorPanel />
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <ConfidenceCard latest={signals[0] ?? null} />
           <SignalFeed signals={signals} />

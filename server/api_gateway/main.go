@@ -4,6 +4,8 @@
 // Redis pub/sub as SSE, the trading-mode toggle, and Neon history queries.
 // The Next.js frontend talks to this over plain HTTP — it holds no business
 // logic, no Redis client, no Postgres client of its own anymore.
+//
+// v2: added /monitor (analyst gate state + tracker rolling stats from Redis).
 package main
 
 import (
@@ -33,7 +35,6 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("no .env file found, relying on real environment variables")
 	}
-	// startHealthServer() // if you added the earlier health-check line, keep it here too
 
 	redisAddr := getenv("REDIS_ADDR", "localhost:6379")
 	rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
@@ -52,6 +53,7 @@ func main() {
 	mux.HandleFunc("/history", withCORS(handleHistory))
 	mux.HandleFunc("/approve", withCORS(handleApprove))
 	mux.HandleFunc("/status", withCORS(handleStatus))
+	mux.HandleFunc("/monitor", withCORS(handleMonitor))
 
 	port := getenv("GATEWAY_PORT", "8090")
 	log.Printf("API gateway listening on :%s", port)
@@ -228,11 +230,11 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	outcomes := []outcomeRow{}
 	rows2, err := db.Query(
-	`SELECT symbol, kind, entry_price, exit_price, outcome, pct_change, confidence, entry_time
-	 FROM trade_outcomes WHERE symbol = $1 AND outcome IN ('win','loss','timeout')
-	 ORDER BY entry_time DESC LIMIT $2`,
-	symbol, limit,
-)
+		`SELECT symbol, kind, entry_price, exit_price, outcome, pct_change, confidence, entry_time
+		 FROM trade_outcomes WHERE symbol = $1 AND outcome IN ('win','loss','timeout')
+		 ORDER BY entry_time DESC LIMIT $2`,
+		symbol, limit,
+	)
 	if err == nil {
 		defer rows2.Close()
 		for rows2.Next() {
@@ -314,4 +316,23 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		threshold = "75.0"
 	}
 	json.NewEncoder(w).Encode(map[string]string{"mode": mode, "threshold": threshold})
+}
+
+// handleMonitor returns the analyst's gate state and the tracker's rolling
+// stats, straight from the Redis hashes they write every few seconds.
+func handleMonitor(w http.ResponseWriter, r *http.Request) {
+	out := map[string]map[string]string{}
+	for name, key := range map[string]string{
+		"rolling":     "monitor:rolling",
+		"gate":        "monitor:gate",
+		"gate_counts": "monitor:gate_counts",
+		"scores":      "monitor:scores",
+	} {
+		m, err := rdb.HGetAll(r.Context(), key).Result()
+		if err == nil {
+			out[name] = m
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
 }

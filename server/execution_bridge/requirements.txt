@@ -2,3 +2,4 @@ python-binance==1.0.19
 MetaTrader5==5.0.4993
 redis==5.0.8
 python-dotenv==1.0.1
+
