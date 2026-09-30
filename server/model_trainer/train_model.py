@@ -85,6 +85,8 @@ def main():
         return
 
     print_daily_regime_check(df)
+    # addded evaluation for day by daya 
+    day_aucs = evaluate_by_day(df)
 
     X = df[FEATURES].values
     y = (df["outcome"] == "win").astype(int).values
@@ -94,6 +96,8 @@ def main():
     print("==============================")
     tscv = TimeSeriesSplit(n_splits=5)
     aucs = []
+
+    
 
     for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
         scaler = StandardScaler()
@@ -140,12 +144,34 @@ def main():
     artifact = {
         "model": final_model, "scaler": scaler, "features": FEATURES,
         "rows_used": len(df), "cv_mean_auc": mean_auc, "cv_fold_aucs": aucs,
-        "trustworthy": mean_auc >= 0.55,
+        "trustworthy": len(day_aucs) >= 3 and min(day_aucs) > 0.5 and sum(day_aucs) / len(day_aucs) >= 0.55,
         "period": {"start": str(df["entry_time"].min()), "end": str(df["entry_time"].max())},
     }
     joblib.dump(artifact, MODEL_OUT)
     print(f"\nSaved model to: {MODEL_OUT} (trustworthy={artifact['trustworthy']})")
 
+
+def evaluate_by_day(df):
+    df = df.copy()
+    df["day"] = df["entry_time"].dt.date
+    days = sorted(df["day"].unique())
+    aucs = []
+    print("\nEXPANDING-WINDOW EVALUATION (train on prior days, test on next day)")
+    for i in range(2, len(days)):
+        train = df[df["day"].isin(days[:i])]
+        test = df[df["day"] == days[i]]
+        yte = (test["outcome"] == "win").astype(int).values
+        if len(set(yte)) < 2:
+            continue
+        ytr = (train["outcome"] == "win").astype(int).values
+        scaler = StandardScaler()
+        Xtr = scaler.fit_transform(train[FEATURES].values)
+        Xte = scaler.transform(test[FEATURES].values)
+        m = LogisticRegression(class_weight="balanced", max_iter=2000, random_state=42).fit(Xtr, ytr)
+        auc = roc_auc_score(yte, m.predict_proba(Xte)[:, 1])
+        aucs.append(auc)
+        print(f"  {days[i]}: AUC={auc:.4f}  base_win_rate={yte.mean():.3f}  n={len(test)}")
+    return aucs
 
 if __name__ == "__main__":
     main()
