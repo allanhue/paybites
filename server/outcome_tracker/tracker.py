@@ -48,6 +48,7 @@ FLUSH_SECONDS = float(os.getenv("DB_FLUSH_SECONDS", "5"))
 
 NEAR_MISS_COOLDOWN_SECONDS = float(os.getenv("NEAR_MISS_COOLDOWN_SECONDS", "120"))
 GATED_COOLDOWN_SECONDS = float(os.getenv("GATED_COOLDOWN_SECONDS", "300"))
+SAMPLE_COOLDOWN_SECONDS = float(os.getenv("SAMPLE_COOLDOWN_SECONDS", "600"))
 
 BARRIER_MODE = os.getenv("BARRIER_MODE", "fixed").lower()  # fixed | vol
 BARRIER_VOL_K = float(os.getenv("BARRIER_VOL_K", "1.0"))

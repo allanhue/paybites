@@ -66,8 +66,17 @@ def load_data() -> pd.DataFrame:
     q = "SELECT * FROM trade_outcomes WHERE outcome IN ('win','loss') AND kind = ANY(:kinds)"
     params: dict = {"kinds": TRAIN_KINDS}
     if TREND_BIAS_CUTOFF:
+        try:
+            cutoff_ts = pd.Timestamp(TREND_BIAS_CUTOFF)
+            if cutoff_ts.tzinfo is None:
+                cutoff_ts = cutoff_ts.tz_localize("UTC")
+        except (ValueError, TypeError):
+            raise SystemExit(
+                f"TRAIN_CUTOFF / TREND_BIAS_CUTOFF is not a valid timestamp: {TREND_BIAS_CUTOFF!r}\n"
+                "Use a real value in .env, for example: TRAIN_CUTOFF=2026-10-01 00:00:00+00"
+            )
         q += " AND entry_time >= :cutoff"
-        params["cutoff"] = TREND_BIAS_CUTOFF
+        params["cutoff"] = cutoff_ts.to_pydatetime()
     q += " ORDER BY entry_time ASC"
 
     with create_engine(url).connect() as conn:
