@@ -292,8 +292,9 @@ def handle_signal(payload: dict, kind: str, gate: str | None = None):
             target=target, stop=stop,
         ))
 
-    channel = "trade.outcomes" if kind == "signal" else "trade.missed"
-    r.publish(channel, json.dumps({"symbol": symbol, "price": price, "confidence": confidence, "status": "pending"}))
+    if kind != "sample":  # unbiased samples are for the database only, not the dashboard feeds
+        channel = "trade.outcomes" if kind == "signal" else "trade.missed"
+        r.publish(channel, json.dumps({"symbol": symbol, "price": price, "confidence": confidence, "status": "pending"}))
 
 
 def maybe_track(payload: dict, kind: str, cooldown: float, gate: str | None = None):
@@ -334,13 +335,14 @@ def finalize(p: PendingCheck, exit_price: float, outcome: str, pct_change: float
     if p.kind in ("signal", "near_miss"):  # gated entries are shadow-only, kept out of the health stats
         _recent.append((outcome, pct_change, net))
         write_monitor()
-    channel = "trade.outcomes" if p.kind == "signal" else "trade.missed"
-    r.publish(channel, json.dumps({
-        "symbol": p.symbol, "entry_price": p.entry_price, "exit_price": exit_price,
-        "confidence": p.confidence, "outcome": outcome, "kind": p.kind,
-        "pct_change": round(pct_change * 100, 3), "status": "resolved",
-    }))
-    print(f"[tracker] {p.kind} {p.symbol} -> {outcome} ({pct_change*100:.2f}%)")
+    if p.kind != "sample":
+        channel = "trade.outcomes" if p.kind == "signal" else "trade.missed"
+        r.publish(channel, json.dumps({
+            "symbol": p.symbol, "entry_price": p.entry_price, "exit_price": exit_price,
+            "confidence": p.confidence, "outcome": outcome, "kind": p.kind,
+            "pct_change": round(pct_change * 100, 3), "status": "resolved",
+        }))
+        print(f"[tracker] {p.kind} {p.symbol} -> {outcome} ({pct_change*100:.2f}%)")
 
 
 def main():
@@ -378,6 +380,9 @@ def main():
                 "volatility": payload.get("volatility"), "macd_hist": payload.get("macd_hist"),
                 "trend_bias": payload.get("trend_bias"),
             }
+            # Unselected sample: one entry per symbol every SAMPLE_COOLDOWN_SECONDS whatever the
+            # score is. This is the only data that can show whether score predicts return.
+            maybe_track(entry, "sample", SAMPLE_COOLDOWN_SECONDS)
             if score > threshold and gate in ("regime", "breaker"):
                 maybe_track(entry, "gated", GATED_COOLDOWN_SECONDS, gate=gate)
             elif threshold - NEAR_MISS_MARGIN <= score <= threshold:

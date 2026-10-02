@@ -91,6 +91,17 @@ def db_sections() -> None:
                 WHERE entry_time > now() - interval '48 hours' AND trend_bias IS NOT NULL AND trend_bias<>0
                 GROUP BY 1 ORDER BY 1 DESC
             """, {}),
+            ("5b. SCORE vs FORWARD RETURN (unbiased 'sample' rows; avg_fwd_pct must exceed the fee to matter)", """
+                SELECT (floor(confidence/5)*5)::int AS score_bucket, COUNT(*) AS n,
+                       ROUND((AVG(pct_change)*100)::numeric,3) AS avg_fwd_pct,
+                       ROUND((STDDEV(pct_change)*100)::numeric,3) AS sd_pct,
+                       ROUND((100.0*COUNT(*) FILTER (WHERE outcome='win')
+                              / NULLIF(COUNT(*) FILTER (WHERE outcome IN ('win','loss')),0))::numeric,1) AS win_rate,
+                       ROUND((100.0*COUNT(*) FILTER (WHERE outcome='timeout')/COUNT(*))::numeric,1) AS timeout_pct
+                FROM trade_outcomes
+                WHERE kind='sample' AND outcome IS NOT NULL AND pct_change IS NOT NULL
+                GROUP BY 1 ORDER BY 1
+            """, {}),
             ("5. KIND COMPARISON (last 7 days, fees included)", """
                 SELECT kind, COALESCE(gate,'-') AS gate, COUNT(*) AS n,
                        ROUND((100.0*COUNT(*) FILTER (WHERE outcome='win')
