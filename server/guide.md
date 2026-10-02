@@ -119,6 +119,10 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\p
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\news_scanner; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python scanner.py"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\api_gateway; Load-EnvFile .env; go run main.go"
 
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python horizon_backtest.py"
+
+
+
 Write-Host "Core services launched. execution_bridge, balance_sync, and model_trainer are NOT auto-started." -ForegroundColor Yellow
 Write-Host "Start execution_bridge/balance_sync manually when you intend to trade real money." -ForegroundColor Yellow
 Write-Host "Run model_trainer manually, on a delay (3 days to weekly) — not every session." -ForegroundColor Yellow
