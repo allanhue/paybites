@@ -50,8 +50,11 @@ def _get(path: str):
     raise RuntimeError(f"all hosts failed for {path}: {last}")
 
 
+END_DAYS_AGO = int(os.getenv("BT_END_DAYS_AGO", "0"))  # shift the window back for out-of-sample tests
+
+
 def fetch_closes(symbol: str) -> pd.Series:
-    end = int(time.time() * 1000)
+    end = int(time.time() * 1000) - END_DAYS_AGO * 86400 * 1000
     start = end - DAYS * 86400 * 1000
     rows = []
     while start < end:
