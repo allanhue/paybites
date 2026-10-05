@@ -12,9 +12,9 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Paybites Live Market Desk",
-  description: "A real-time trading dashboard for monitoring market signals, risk decisions and analyst insights.",
+export const metadata = {
+  title: "paybites live market desk",
+  description: "Multi-agent market scanner, risk shield and outcome tracker",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
