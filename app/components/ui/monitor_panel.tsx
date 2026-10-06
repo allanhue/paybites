@@ -59,7 +59,7 @@ export default function MonitorPanel() {
       </div>
       {failed && (
         <p className="px-4 py-3 text-sm text-[#E8A23D]">
-          Cannot reach the gateway. Check that api_gateway is running.
+          Cannot reach the gateway Server Down !
         </p>
       )}
       <Row label="market regime (crypto)" value={g.regime_crypto ?? "no data"} color={stateColor(g.regime_crypto)} />

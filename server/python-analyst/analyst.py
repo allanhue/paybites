@@ -31,12 +31,26 @@ import time
 from collections import deque
 
 import redis
+from dotenv import load_dotenv
 
 import db
 from scoring import BandTracker, Features, MomentumTracker, rule_based_score
 
+# Load python-analyst\.env no matter how the process was started (run_all.ps1 already exports it;
+# load_dotenv never overrides variables that are already set).
+load_dotenv()
+
 REDIS_ADDR = os.getenv("REDIS_ADDR", "localhost:6379")
 STRATEGY_THRESHOLD = float(os.getenv("STRATEGY_THRESHOLD", "75.0"))
+
+# THRESHOLD_MODE=percentile makes the bar adaptive: a signal fires when a score is in the top
+# (100 - THRESHOLD_PERCENTILE)% of recent scores, but never below THRESHOLD_FLOOR. The rule score
+# tops out near 50 (p99 ~47), so a fixed 75 can never fire. NOTE: this makes signals APPEAR; it does
+# not make them profitable. Judge them on the net-of-fee numbers in the monitor.
+THRESHOLD_MODE = os.getenv("THRESHOLD_MODE", "fixed").lower()  # fixed | percentile
+THRESHOLD_PERCENTILE = float(os.getenv("THRESHOLD_PERCENTILE", "99.5"))
+THRESHOLD_FLOOR = float(os.getenv("THRESHOLD_FLOOR", "40"))
+THRESHOLD_WARMUP_SAMPLES = int(os.getenv("THRESHOLD_WARMUP_SAMPLES", "3000"))
 SIGNAL_COOLDOWN_SECONDS = float(os.getenv("SIGNAL_COOLDOWN_SECONDS", "300"))
 
 REGIME_GATE = os.getenv("REGIME_GATE", "on").lower() == "on"
@@ -142,6 +156,7 @@ breaker = Breaker()
 last_signal_ts: dict[str, float] = {}
 recent_scores: deque = deque(maxlen=20000)  # every 5th scored tick, ~7 min of history
 _tick_counter = 0
+current_threshold = STRATEGY_THRESHOLD  # replaced by the adaptive value once enough scores exist
 
 
 def gate_reason(symbol: str, now: float) -> str | None:
@@ -155,27 +170,34 @@ def gate_reason(symbol: str, now: float) -> str | None:
 
 
 def write_monitor(now: float) -> None:
+    global current_threshold
     label, share = regime.state(True, now)
+    s = sorted(recent_scores)
+    n = len(s)
+
+    def pick(q: float) -> float:
+        return s[min(n - 1, int(q * n))]
+
+    if THRESHOLD_MODE == "percentile" and n >= THRESHOLD_WARMUP_SAMPLES:
+        current_threshold = round(max(THRESHOLD_FLOOR, pick(THRESHOLD_PERCENTILE / 100.0)), 2)
+
     try:
         r.hset("monitor:gate", mapping={
             "regime_crypto": label if REGIME_GATE else "off",
             "falling_share_crypto": "n/a" if share is None else f"{share:.2f}",
             "breaker": breaker.check(now),
-            "threshold": STRATEGY_THRESHOLD,
+            "threshold": current_threshold,
+            "threshold_mode": THRESHOLD_MODE,
             "cooldown_seconds": SIGNAL_COOLDOWN_SECONDS,
             "updated_at": now,
         })
-        s = sorted(recent_scores)
-        n = len(s)
         if n:
-            def pick(q: float) -> float:
-                return s[min(n - 1, int(q * n))]
             r.hset("monitor:scores", mapping={
                 "n": n,
                 "p50": round(pick(0.50), 1), "p90": round(pick(0.90), 1),
                 "p99": round(pick(0.99), 1), "max": round(s[-1], 1),
-                "pct_above_threshold": round(100.0 * sum(1 for x in s if x > STRATEGY_THRESHOLD) / n, 3),
-                "threshold": STRATEGY_THRESHOLD,
+                "pct_above_threshold": round(100.0 * sum(1 for x in s if x > current_threshold) / n, 3),
+                "threshold": current_threshold,
                 "updated_at": now,
             })
     except redis.RedisError:
@@ -234,7 +256,7 @@ def main() -> None:
         _tick_counter += 1
         if _tick_counter % 5 == 0:
             recent_scores.append(score)
-        crossed = score > STRATEGY_THRESHOLD
+        crossed = score > current_threshold
         blocked_by = gate_reason(symbol, now) if crossed else None
         emit = crossed and blocked_by is None
 
@@ -257,7 +279,7 @@ def main() -> None:
             "symbol": symbol, "price": price, "score": score,
             "rsi_14": rsi_14, "momentum": mom, "band_position": round(band_pos, 3),
             "volatility": volatility, "macd_hist": raw_macd, "trend_bias": raw_trend,
-            "components": components, "threshold": STRATEGY_THRESHOLD,
+            "components": components, "threshold": current_threshold,
             "blocked_by": blocked_by,
         }
         r.publish("market.scores", json.dumps(score_payload))

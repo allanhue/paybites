@@ -119,7 +119,6 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\p
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\news_scanner; Load-EnvFile .env; .\venv\Scripts\Activate.ps1; python scanner.py"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "$loadEnv; cd C:\paybites\server\api_gateway; Load-EnvFile .env; go run main.go"
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python horizon_backtest.py"
 
 
 
@@ -136,6 +135,8 @@ npm run dev
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python train_model.py"
 
 
+
+
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python diagnostics.py --live"
                                                                                                                
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python diagnostics.py "
@@ -143,7 +144,10 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\se
 
 
 
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1;  python edge_lab.py "
 
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd C:\paybites\server\model_trainer; .\venv\Scripts\Activate.ps1; python horizon_backtest.py"
 
 
 
