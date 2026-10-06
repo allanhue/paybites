@@ -48,6 +48,18 @@ export type TradeOutcome = {
   pct_change?: number;
   status: "pending" | "resolved";
 };
+// What the execution bridge reports back after an approved trade.
+export type ExecutionEvent = {
+  status: string; // filled | closed | rejected | failed | exit_failed
+  symbol?: string;
+  reason?: string;
+  pnl?: number;
+  entry?: number;
+  exit?: number;
+  qty?: number;
+  broker?: string;
+  receivedAt: number;
+};
 
 function notify(title: string, body: string) {
   if (typeof window === "undefined" || !("Notification" in window)) return;
@@ -62,6 +74,7 @@ export function useSignalStream(maxItems = 50) {
   const [scores, setScores] = useState<ScoreTick[]>([]);
   const [outcomes, setOutcomes] = useState<TradeOutcome[]>([]);
   const [missed, setMissed] = useState<TradeOutcome[]>([]);
+  const [executions, setExecutions] = useState<ExecutionEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
@@ -116,6 +129,16 @@ export function useSignalStream(maxItems = 50) {
       );
     });
 
+    es.addEventListener("trade.executed", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data) as Omit<ExecutionEvent, "receivedAt">;
+        setExecutions((prev) => [{ ...data, receivedAt: Date.now() }, ...prev].slice(0, maxItems));
+        notify(`Trade ${data.status}`, `${data.symbol ?? ""} ${data.reason ?? ""}`.trim());
+      } catch (err) {
+        console.error("Failed to parse trade.executed event", err);
+      }
+    });
+
     es.addEventListener("market.news", (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data) as NewsItem;
@@ -134,5 +157,5 @@ export function useSignalStream(maxItems = 50) {
     return () => es.close();
   }, [maxItems]);
 
-  return { signals, decisions, scores, outcomes, missed, news, connected };
+  return { signals, decisions, scores, outcomes, missed, executions, news, connected };
 }
