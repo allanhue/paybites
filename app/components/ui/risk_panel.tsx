@@ -9,7 +9,10 @@ const statusColor: Record<TradeDecision["status"], string> = {
   pending_approval: "#6C8CFF",
 };
 
-const APPROVAL_TTL_SECONDS = 60;
+// Must match APPROVAL_TTL_SECONDS in the api_gateway env. Set NEXT_PUBLIC_APPROVAL_TTL_SECONDS in
+// .env.local (restart `npm run dev` after changing it). The bridge buys at the live market price,
+// so a longer window does not mean a stale price.
+const APPROVAL_TTL_SECONDS = Number(process.env.NEXT_PUBLIC_APPROVAL_TTL_SECONDS) || 60;
 
 function secondsLeft(timestamp: number): number {
   const age = (Date.now() - timestamp) / 1000;
@@ -18,6 +21,8 @@ function secondsLeft(timestamp: number): number {
 
 export default function RiskPanel({ decisions }: { decisions: TradeDecision[] }) {
   const [, forceTick] = useState(0);
+  // per-decision approval state: "sending" | "sent" | "failed: <why>"
+  const [sent, setSent] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const interval = setInterval(() => forceTick((n) => n + 1), 1000);
@@ -25,19 +30,27 @@ export default function RiskPanel({ decisions }: { decisions: TradeDecision[] })
   }, []);
 
   async function approve(d: TradeDecision) {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbol: d.symbol,
-        confidence: d.confidence,
-        trigger_price: d.price,
-        timestamp: d.timestamp,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      alert(text || "Approval failed");
+    const key = `${d.symbol}-${d.timestamp}`;
+    setSent((s) => ({ ...s, [key]: "sending" }));
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: d.symbol,
+          confidence: d.confidence,
+          trigger_price: d.price,
+          timestamp: d.timestamp,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setSent((s) => ({ ...s, [key]: `failed: ${text.trim() || res.status}` }));
+        return;
+      }
+      setSent((s) => ({ ...s, [key]: "sent" }));
+    } catch {
+      setSent((s) => ({ ...s, [key]: "failed: cannot reach the gateway" }));
     }
   }
 
@@ -53,6 +66,9 @@ export default function RiskPanel({ decisions }: { decisions: TradeDecision[] })
         {decisions.map((d, i) => {
           const left = secondsLeft(d.timestamp);
           const expired = left <= 0;
+          const key = `${d.symbol}-${d.timestamp}`;
+          const state = sent[key];
+          const failed = state?.startsWith("failed");
           return (
             <div
               key={i}
@@ -65,19 +81,28 @@ export default function RiskPanel({ decisions }: { decisions: TradeDecision[] })
               </div>
               <p className="mt-1 text-xs text-[#7C8B9C]">{d.reason}</p>
               {d.status === "pending_approval" && (
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    onClick={() => approve(d)}
-                    disabled={expired}
-                    className={`rounded-sm px-3 py-1 text-xs font-medium ${
-                      expired
-                        ? "cursor-not-allowed bg-[#1B2531] text-[#7C8B9C]"
-                        : "bg-[#35D0A0] text-[#0F1720] hover:opacity-90"
-                    }`}
-                  >
-                    {expired ? "Expired" : "Approve & Trade"}
-                  </button>
-                  {!expired && <span className="font-mono text-xs text-[#7C8B9C]">{left}s left</span>}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {state === "sent" ? (
+                    <span className="text-xs text-[#35D0A0]">Sent to the bridge. Result appears in the execution log.</span>
+                  ) : state === "sending" ? (
+                    <span className="text-xs text-[#7C8B9C]">Sending...</span>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => approve(d)}
+                        disabled={expired}
+                        className={`rounded-sm px-3 py-1 text-xs font-medium ${
+                          expired
+                            ? "cursor-not-allowed bg-[#1B2531] text-[#7C8B9C]"
+                            : "bg-[#35D0A0] text-[#0F1720] hover:opacity-90"
+                        }`}
+                      >
+                        {expired ? "Expired" : "Approve & Trade"}
+                      </button>
+                      {!expired && <span className="font-mono text-xs text-[#7C8B9C]">{left}s left</span>}
+                      {failed && <span className="text-xs text-[#E8A23D]">{state}</span>}
+                    </>
+                  )}
                 </div>
               )}
             </div>
