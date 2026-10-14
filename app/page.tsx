@@ -7,12 +7,13 @@ import RiskPanel from "@/app/components/ui/risk_panel";
 import AnalystDetail from "@/app/components/ui/analyst_detail";
 import Opportunities from "@/app/components/ui/opportunities";
 import MonitorPanel from "@/app/components/ui/monitor_panel";
+import ExecutionLog from "@/app/components/ui/execution_log";
 import { useSignalStream } from "@/app/lib/use_signal_stream";
 import StatusBanner from "@/app/components/ui/status_banner";
 
 
 export default function LiveOpsPage() {
-  const { signals, decisions, scores, connected } = useSignalStream();
+  const { signals, decisions, scores, executions, connected } = useSignalStream();
 
   return (
     <div className="min-h-screen bg-[#0F1720] text-[#E7ECF2]">
@@ -25,6 +26,7 @@ export default function LiveOpsPage() {
           <SignalFeed signals={signals} />
           <RiskPanel decisions={decisions} />
         </div>
+        <ExecutionLog executions={executions} />
         <AnalystDetail latest={scores[0] ?? null} />
         <Opportunities scores={scores} />
       </main>

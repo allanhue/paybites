@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -92,7 +93,7 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	sub := rdb.Subscribe(r.Context(),
 		"market.signals", "trade.decisions", "market.scores",
-		"trade.outcomes", "trade.missed", "market.news",
+		"trade.outcomes", "trade.missed", "market.news", "trade.executed",
 	)
 	defer sub.Close()
 
@@ -274,7 +275,18 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-const approvalTTLSeconds = 60 // matches the frontend countdown
+// How long an Approve click stays valid. Must match NEXT_PUBLIC_APPROVAL_TTL_SECONDS in the
+// dashboard's .env.local. The bridge buys at the live market price, so a longer window is safe.
+var approvalTTLSeconds = int64(getenvInt("APPROVAL_TTL_SECONDS", 60))
+
+func getenvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
+			return i
+		}
+	}
+	return fallback
+}
 
 func handleApprove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
